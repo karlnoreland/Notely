@@ -126,11 +126,16 @@ export const mathExtension: MarkdownConfig = {
       before: 'FencedCode'
     }
   ],
-  wrap: parseMixed((node) =>
-    node.name === 'InlineMath' || node.name === 'BlockMath'
-      ? { parser: latex.parser, overlay: (child) => child.name === 'MathContent' }
-      : null
-  )
+  // Highlight the LaTeX with one continuous range from the first to the last content piece.
+  // (Per-line overlay ranges crash the stream parser's gap handling when the first piece
+  // starts mid-line, e.g. "$$ x" on the opening line. Inside a block quote this means the
+  // "> " markers are lexed as LaTeX too, which is harmless.)
+  wrap: parseMixed((ref) => {
+    if (ref.name !== 'InlineMath' && ref.name !== 'BlockMath') return null
+    const parts = ref.node.getChildren('MathContent')
+    if (!parts.length) return null
+    return { parser: latex.parser, overlay: [{ from: parts[0].from, to: parts[parts.length - 1].to }] }
+  })
 }
 
 /** The TeX source of an InlineMath or BlockMath node, without delimiters or quote markers. */

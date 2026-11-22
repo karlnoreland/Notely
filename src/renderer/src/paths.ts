@@ -30,6 +30,15 @@ export function resolvePath(base: string, target: string): string | null {
   return parts.join('/')
 }
 
+/** Path of `target` relative to folder `fromDir` (both vault-relative). */
+export function relativePath(fromDir: string, target: string): string {
+  const from = fromDir ? fromDir.split('/') : []
+  const to = target.split('/')
+  let common = 0
+  while (common < from.length && common < to.length - 1 && from[common] === to[common]) common++
+  return [...Array<string>(from.length - common).fill('..'), ...to.slice(common)].join('/')
+}
+
 export function isInside(path: string, folder: string): boolean {
   return path === folder || path.startsWith(`${folder}/`)
 }

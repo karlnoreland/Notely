@@ -6,7 +6,8 @@ import type { Settings } from '../shared/types'
 const DEFAULTS: Settings = {
   vaultPath: null,
   lastOpenFile: null,
-  spellcheck: { enabled: true, languages: [] }
+  spellcheck: { enabled: true, languages: [] },
+  theme: 'system'
 }
 
 export class SettingsStore {

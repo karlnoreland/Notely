@@ -19,7 +19,8 @@ import { StateField, type EditorState, type Range } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import { IterMode } from '@lezer/common'
 import { mathSource } from './math'
-import { BulletWidget, CheckboxWidget, CodeLangWidget, HrWidget, ImageWidget, MathWidget } from './widgets'
+import { parseTable, TableWidget } from './table'
+import { BulletWidget, CheckboxWidget, CodeCopyWidget, HrWidget, ImageWidget, MathWidget } from './widgets'
 
 const noSpell = { spellcheck: 'false' }
 
@@ -32,6 +33,7 @@ const urlMark = Decoration.mark({ class: 'cm-link-text cm-url', attributes: noSp
 const taskDoneMark = Decoration.mark({ class: 'cm-task-done' })
 const quoteLine = Decoration.line({ class: 'cm-blockquote' })
 const mathLine = Decoration.line({ class: 'cm-math-block', attributes: noSpell })
+const tableLine = Decoration.line({ class: 'cm-table-line' })
 const headingLine = [1, 2, 3, 4, 5, 6].map((level) =>
   Decoration.line({ class: `cm-heading cm-heading-${level}` })
 )
@@ -151,11 +153,28 @@ function buildDecorations(state: EditorState): DecorationSet {
 
         case 'Image': {
           const url = ref.node.getChild('URL')
-          if (!url || touches(from, to)) break
+          if (!url) break
           const marks = ref.node.getChildren('LinkMark')
           const alt = marks.length >= 2 ? doc.sliceString(marks[0].to, marks[1].from) : ''
-          const widget = new ImageWidget(doc.sliceString(url.from, url.to), alt)
-          out.push(Decoration.replace({ widget }).range(from, to))
+          const src = doc.sliceString(url.from, url.to)
+          if (touches(from, to)) {
+            // Editing: keep the source visible and show the image under it.
+            out.push(Decoration.widget({ widget: new ImageWidget(src, alt, 0), side: 1 }).range(to))
+            break
+          }
+          out.push(Decoration.replace({ widget: new ImageWidget(src, alt, 2) }).range(from, to))
+          return false
+        }
+
+        case 'Table': {
+          const startsLine = doc.lineAt(from).from === from && doc.lineAt(to).to === to
+          const table = startsLine && !linesTouched(from, to) ? parseTable(state, ref.node) : null
+          if (!table) {
+            eachLine(from, to, (lineFrom) => out.push(tableLine.range(lineFrom)))
+            break
+          }
+          const widget = new TableWidget(doc.sliceString(from, to), table)
+          out.push(Decoration.replace({ widget, block: true }).range(from, to))
           return false
         }
 
@@ -206,7 +225,7 @@ function buildDecorations(state: EditorState): DecorationSet {
           if (open) {
             const lang = info ? doc.sliceString(info.from, info.to) : ''
             const lineEnd = doc.lineAt(open.from).to
-            out.push(Decoration.replace({ widget: new CodeLangWidget(lang) }).range(open.from, lineEnd))
+            out.push(Decoration.replace({ widget: new CodeCopyWidget(lang) }).range(open.from, lineEnd))
           }
           const close = marks.length > 1 ? marks[marks.length - 1] : null
           if (close && open && doc.lineAt(close.from).number !== doc.lineAt(open.from).number) {

@@ -1,3 +1,4 @@
+import { syntaxTree } from '@codemirror/language'
 import { EditorView, WidgetType } from '@codemirror/view'
 import katex from 'katex'
 import { noteContext } from './context'
@@ -11,7 +12,7 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 }
 
-function renderTex(tex: string, display: boolean): string {
+export function renderTex(tex: string, display: boolean): string {
   const key = (display ? 'D' : 'I') + tex
   let html = texCache.get(key)
   if (html !== undefined) return html
@@ -81,13 +82,18 @@ export class MathWidget extends WidgetType {
 export class ImageWidget extends WidgetType {
   constructor(
     readonly src: string,
-    readonly alt: string
+    readonly alt: string,
+    /**
+     * Where a click puts the cursor, relative to the widget position: 2 (inside "![") when the
+     * widget replaces the source, 0 when it is shown after the visible source while editing.
+     */
+    readonly offset: number
   ) {
     super()
   }
 
   eq(other: ImageWidget): boolean {
-    return other.src === this.src && other.alt === this.alt
+    return other.src === this.src && other.alt === this.alt && other.offset === this.offset
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -106,7 +112,7 @@ export class ImageWidget extends WidgetType {
       view.requestMeasure()
     })
     wrap.append(img)
-    editOnMouseDown(wrap, view, 2)
+    editOnMouseDown(wrap, view, this.offset)
     return wrap
   }
 
@@ -183,23 +189,68 @@ export class HrWidget extends WidgetType {
   }
 }
 
-export class CodeLangWidget extends WidgetType {
+/** The code inside the fenced block that contains `pos`, without its fences. */
+function fencedCodeAt(view: EditorView, pos: number): string {
+  const { doc } = view.state
+  for (let node = syntaxTree(view.state).resolve(pos, 1); ; node = node.parent!) {
+    if (node.name === 'FencedCode') {
+      const first = doc.lineAt(node.from).number + 1
+      const marks = node.getChildren('CodeMark')
+      const closing = marks.length > 1 ? doc.lineAt(marks[marks.length - 1].from).number : 0
+      const last = closing > first - 1 ? closing - 1 : doc.lineAt(node.to).number
+      const lines: string[] = []
+      for (let n = first; n <= last; n++) lines.push(doc.line(n).text)
+      return lines.join('\n')
+    }
+    if (!node.parent) return ''
+  }
+}
+
+const COPY_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>'
+
+/** Language label in the top-right corner of a code block; clicking it copies the code. */
+export class CodeCopyWidget extends WidgetType {
   constructor(readonly lang: string) {
     super()
   }
 
-  eq(other: CodeLangWidget): boolean {
+  eq(other: CodeCopyWidget): boolean {
     return other.lang === this.lang
   }
 
-  toDOM(): HTMLElement {
-    const el = document.createElement('span')
-    el.className = 'cm-code-lang'
-    el.textContent = this.lang
-    return el
+  toDOM(view: EditorView): HTMLElement {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'cm-code-copy'
+    button.title = 'Copy code'
+    const label = document.createElement('span')
+    label.textContent = this.lang || 'Copy'
+    button.innerHTML = COPY_ICON
+    button.prepend(label)
+
+    let timer: number | undefined
+    // Keep the cursor where it is: don't let the click reach the editor.
+    button.addEventListener('mousedown', (event) => event.preventDefault())
+    button.addEventListener('click', async (event) => {
+      event.preventDefault()
+      try {
+        await navigator.clipboard.writeText(fencedCodeAt(view, view.posAtDOM(button)))
+        label.textContent = 'Copied!'
+        button.classList.add('copied')
+      } catch {
+        label.textContent = 'Copy failed'
+      }
+      clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        label.textContent = this.lang || 'Copy'
+        button.classList.remove('copied')
+      }, 1500)
+    })
+    return button
   }
 
   ignoreEvent(): boolean {
-    return false
+    return true
   }
 }

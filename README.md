@@ -5,7 +5,16 @@ A Markdown note-taking app for Linux and macOS with Obsidian-style live preview.
 - **Live preview.** Markdown renders as you type. The element under the cursor is
   *semi-rendered*: its syntax (`#`, `**`, ```` ``` ````, `$$`) becomes visible but keeps its
   styling, so a heading stays large and bold stays bold while you edit it.
-- **Syntax highlighting** in fenced code blocks for 100+ languages (loaded on demand).
+- **Syntax highlighting** in fenced code blocks for 100+ languages (loaded on demand). The
+  language label in a code block's corner is a **copy button**.
+- **Autocomplete** inside math (LaTeX commands, symbols, environments, with snippet
+  placeholders you fill in using Tab) and inside code blocks: keywords, built-ins and snippets for
+  Python, JavaScript/TypeScript, HTML, Swift and Bash, plus identifiers already used in the block
+  for any language. Prose never shows a popup.
+- **Tables:** right-click › *Insert Table…* (or `Ctrl+Shift+T`) opens a size picker. Tables
+  render as real tables, and clicking a cell jumps to its source.
+- **Images:** paste or drop an image into a note. It is saved to the vault's `attachments/`
+  folder, linked, and displayed.
 - **LaTeX math** with KaTeX: `$inline$`, `$$display$$` and multi-line `$$ … $$` blocks.
   Math renders when the cursor is elsewhere and shows as highlighted LaTeX source while
   you edit it.
@@ -13,8 +22,10 @@ A Markdown note-taking app for Linux and macOS with Obsidian-style live preview.
   right-click. Code blocks, inline code, math and URLs are not checked.
 - Notes are plain `.md` files in a folder you choose (a "vault"). The app saves
   automatically and picks up changes made by other programs.
-- File tree with create, rename, move to trash and reveal in file manager. Task lists with
-  clickable checkboxes, images, links, block quotes, light and dark themes.
+- File tree with create, rename, move to trash and reveal in file manager. Drag its edge
+  to resize it (double-click the edge to reset).
+- **Dark mode:** *View › Appearance* (Match System / Light / Dark) or the sun/moon button.
+- Task lists with clickable checkboxes, links and block quotes.
 
 ## Development
 
@@ -54,6 +65,8 @@ in place and electron-builder will pick it up.
 | Bold / italic / strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+Shift+X` |
 | Inline code / inline math / link | `Ctrl+E` / `Ctrl+Shift+M` / `Ctrl+K` |
 | Toggle task checkbox | `Ctrl+L` |
+| Insert table | `Ctrl+Shift+T` (or right-click) |
+| Accept suggestion / next snippet field | `Enter` or `Tab` / `Tab` |
 | Heading 1–6 | `Ctrl+1` … `Ctrl+6` |
 | Find and replace | `Ctrl+F` |
 | Toggle sidebar | `Ctrl+\` |
@@ -75,11 +88,15 @@ src/
   renderer/
     src/main.ts      app shell: opening/saving notes, file operations, menu commands
     src/sidebar.ts   file tree with inline rename
+    src/tablePicker.ts  grid popup for choosing a table size
     src/editor/
       setup.ts         CodeMirror configuration
       math.ts          Lezer Markdown extension for $…$ and $$…$$ with nested LaTeX parsing
       livePreview.ts   the live-preview decorations (what is hidden or rendered, and when)
-      widgets.ts       rendered math (KaTeX), images, checkboxes, bullets, rules
+      widgets.ts       rendered math (KaTeX), images, checkboxes, bullets, rules, copy button
+      table.ts         table parsing, rendering and the insert-table command
+      completion.ts    LaTeX and code-block autocomplete
+      paste.ts         pasting/dropping images
       commands.ts      formatting commands
       theme.ts         syntax colors; styles.css holds the rest of the look
 ```

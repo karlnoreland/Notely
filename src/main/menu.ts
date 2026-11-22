@@ -1,13 +1,20 @@
 import { app, Menu, type MenuItemConstructorOptions } from 'electron'
-import type { MenuCommand } from '../shared/types'
+import type { MenuCommand, ThemeSetting } from '../shared/types'
 import type { Spellcheck } from './spellcheck'
+
+export interface MenuContext {
+  send(cmd: MenuCommand): void
+  spellcheck: Spellcheck
+  theme: ThemeSetting
+  setTheme(theme: ThemeSetting): void
+}
 
 /**
  * Formatting shortcuts live here rather than in the CodeMirror keymap so they appear in the
  * menu and behave the same on both platforms. Keys that CodeMirror itself binds (undo, find)
  * are handled by CodeMirror on Linux and by the menu on macOS; both paths run the same command.
  */
-export function buildMenu(send: (cmd: MenuCommand) => void, spellcheck: Spellcheck): Menu {
+export function buildMenu({ send, spellcheck, theme, setTheme }: MenuContext): Menu {
   const isMac = process.platform === 'darwin'
   const sep: MenuItemConstructorOptions = { type: 'separator' }
   const cmd = (label: string, command: MenuCommand, accelerator?: string): MenuItemConstructorOptions => ({
@@ -56,6 +63,7 @@ export function buildMenu(send: (cmd: MenuCommand) => void, spellcheck: Spellche
         cmd('Inline Math', 'math', 'CmdOrCtrl+Shift+M'),
         cmd('Link', 'link', 'CmdOrCtrl+K'),
         cmd('Toggle Task', 'task', 'CmdOrCtrl+L'),
+        cmd('Insert Table…', 'insert-table', 'CmdOrCtrl+Shift+T'),
         sep,
         cmd('Heading 1', 'heading-1', 'CmdOrCtrl+1'),
         cmd('Heading 2', 'heading-2', 'CmdOrCtrl+2'),
@@ -71,6 +79,15 @@ export function buildMenu(send: (cmd: MenuCommand) => void, spellcheck: Spellche
       submenu: [
         cmd('Toggle Sidebar', 'toggle-sidebar', 'CmdOrCtrl+\\'),
         cmd('Toggle Live Preview / Source', 'toggle-live-preview', 'CmdOrCtrl+Shift+E'),
+        {
+          label: 'Appearance',
+          submenu: (['system', 'light', 'dark'] as const).map((value) => ({
+            label: { system: 'Match System', light: 'Light', dark: 'Dark' }[value],
+            type: 'radio' as const,
+            checked: theme === value,
+            click: () => setTheme(value)
+          }))
+        },
         sep,
         { role: 'resetZoom' },
         { role: 'zoomIn' },

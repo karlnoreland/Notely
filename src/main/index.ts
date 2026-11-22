@@ -14,7 +14,7 @@ import {
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { ItemAction, MenuCommand, NodeKind, VaultInfo } from '../shared/types'
+import type { ItemAction, MenuCommand, NodeKind, ThemeSetting, VaultInfo } from '../shared/types'
 import { buildMenu } from './menu'
 import { SettingsStore } from './settings'
 import { Spellcheck } from './spellcheck'
@@ -59,7 +59,23 @@ function sendCommand(cmd: MenuCommand): void {
 }
 
 function refreshMenu(): void {
-  Menu.setApplicationMenu(buildMenu(sendCommand, spellcheck))
+  Menu.setApplicationMenu(
+    buildMenu({ send: sendCommand, spellcheck, theme: settings.get().theme, setTheme })
+  )
+}
+
+const backgroundColor = (): string => (nativeTheme.shouldUseDarkColors ? '#1e1e21' : '#ffffff')
+
+/** themeSource also drives prefers-color-scheme in the renderer and the native menus/dialogs. */
+function applyTheme(theme: ThemeSetting): void {
+  nativeTheme.themeSource = theme
+  mainWindow?.setBackgroundColor(backgroundColor())
+}
+
+function setTheme(theme: ThemeSetting): void {
+  settings.update({ theme })
+  applyTheme(theme)
+  refreshMenu()
 }
 
 function createWindow(): void {
@@ -73,7 +89,7 @@ function createWindow(): void {
     minHeight: 400,
     show: false,
     title: 'Notely',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e21' : '#ffffff',
+    backgroundColor: backgroundColor(),
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 13 } }
       : {}),
@@ -108,7 +124,12 @@ function createWindow(): void {
     }
   })
 
-  spellcheck.attach(win.webContents)
+  spellcheck.attach(win.webContents, (params) =>
+    // formControlType is 'none' for the contenteditable editor, but not for text inputs.
+    params.isEditable && params.formControlType === 'none'
+      ? [{ label: 'Insert Table…', click: () => sendCommand('insert-table') }]
+      : []
+  )
 
   if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
     void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -188,6 +209,12 @@ function registerIpc(): void {
   })
   ipcMain.handle('vault:create-note', (_e, dir: string) => requireVault().createNote(dir))
   ipcMain.handle('vault:create-folder', (_e, dir: string) => requireVault().createFolder(dir))
+  ipcMain.handle('vault:save-attachment', (_e, ext: string, data: Uint8Array) =>
+    requireVault().saveAttachment(ext, data)
+  )
+  ipcMain.handle('theme:set', (_e, theme: ThemeSetting) => {
+    if (theme === 'system' || theme === 'light' || theme === 'dark') setTheme(theme)
+  })
   ipcMain.handle('vault:rename', (_e, rel: string, name: string) => requireVault().rename(rel, name))
   ipcMain.handle('vault:trash', async (_e, rel: string) => {
     const v = requireVault()
@@ -217,6 +244,7 @@ app.setName('Notely')
 
 void app.whenReady().then(async () => {
   settings = new SettingsStore()
+  applyTheme(settings.get().theme)
 
   const savedVault = settings.get().vaultPath
   if (savedVault && existsSync(savedVault)) {

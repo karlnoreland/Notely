@@ -3,6 +3,8 @@ import path from 'node:path'
 import type { TreeNode } from '../shared/types'
 
 const NOTE_EXT = /\.(md|markdown)$/i
+const IMAGE_EXT = /^(png|jpe?g|gif|webp|svg|bmp|avif)$/
+const ATTACHMENTS_DIR = 'attachments'
 
 /** Dotfiles (.git, .obsidian, temp files) and node_modules are never shown or watched. */
 export function isHidden(name: string): boolean {
@@ -115,6 +117,26 @@ export class Vault {
       const abs = path.join(dir, i === 0 ? 'Untitled folder' : `Untitled folder ${i}`)
       try {
         await fs.mkdir(abs)
+        return this.toRel(abs)
+      } catch (err) {
+        if (!isErrno(err, 'EEXIST')) throw err
+      }
+    }
+  }
+
+  /** Writes a pasted/dropped image to attachments/pasted-image-YYYYMMDD-HHMMSS.<ext>. */
+  async saveAttachment(extension: string, data: Uint8Array): Promise<string> {
+    const ext = extension.toLowerCase().replace(/^\./, '')
+    if (!IMAGE_EXT.test(ext)) throw new Error(`Unsupported image type: ${extension}`)
+    const dir = this.resolve(ATTACHMENTS_DIR)
+    await fs.mkdir(dir, { recursive: true })
+    const d = new Date()
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+    for (let i = 0; ; i++) {
+      const abs = path.join(dir, `pasted-image-${stamp}${i ? `-${i}` : ''}.${ext}`)
+      try {
+        await fs.writeFile(abs, data, { flag: 'wx' })
         return this.toRel(abs)
       } catch (err) {
         if (!isErrno(err, 'EEXIST')) throw err

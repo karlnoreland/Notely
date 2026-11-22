@@ -103,8 +103,14 @@ export class Spellcheck {
     return items
   }
 
-  /** Right-click menu with spelling suggestions plus the usual clipboard actions. */
-  attach(contents: WebContents): void {
+  /**
+   * Right-click menu with spelling suggestions plus the usual clipboard actions.
+   * `extraItems` adds app-specific entries (e.g. Insert Table) for the clicked context.
+   */
+  attach(
+    contents: WebContents,
+    extraItems: (params: Electron.ContextMenuParams) => MenuItemConstructorOptions[] = () => []
+  ): void {
     contents.on('context-menu', (_event, params) => {
       const items: MenuItemConstructorOptions[] = []
       if (params.misspelledWord) {
@@ -133,6 +139,8 @@ export class Spellcheck {
       } else if (params.selectionText) {
         items.push({ role: 'copy' })
       }
+      const extra = extraItems(params)
+      if (extra.length) items.push({ type: 'separator' }, ...extra)
       if (items.length) Menu.buildFromTemplate(items).popup()
     })
   }

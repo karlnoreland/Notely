@@ -9,8 +9,10 @@ import type { MenuCommand, TreeNode } from '../../shared/types'
 import { insertLink, setHeading, toggleInline, toggleTask } from './editor/commands'
 import type { NoteContext } from './editor/context'
 import { createEditorState, externalChange, setLivePreview } from './editor/setup'
-import { basename, dirname, isInside, NOTE_EXT, resolvePath, stripNoteExt, vaultUrl } from './paths'
+import { insertTable } from './editor/table'
+import { basename, dirname, isInside, NOTE_EXT, relativePath, resolvePath, stripNoteExt, vaultUrl } from './paths'
 import { FileTree } from './sidebar'
+import { showTablePicker } from './tablePicker'
 
 const api = window.notely
 
@@ -26,7 +28,9 @@ const ui = {
   saveState: byId('save-state'),
   wordCount: byId('word-count'),
   modeToggle: byId<HTMLButtonElement>('mode-toggle'),
-  toast: byId('toast')
+  toast: byId('toast'),
+  sidebar: byId('sidebar'),
+  resizer: byId('sidebar-resizer')
 }
 
 document.body.classList.add(`platform-${api.platform}`)
@@ -75,7 +79,35 @@ const context: NoteContext = {
   },
   openLink(href) {
     void followLink(href)
+  },
+  async saveImage(file) {
+    if (!current) return null
+    const ext = IMAGE_TYPES[file.type] ?? /\.([a-z0-9]+)$/i.exec(file.name)?.[1]
+    if (!ext) {
+      toast(`Unsupported image type: ${file.type || file.name}`)
+      return null
+    }
+    try {
+      const saved = await api.saveAttachment(ext, new Uint8Array(await file.arrayBuffer()))
+      return relativePath(dirname(current), saved)
+        .split('/')
+        .map(encodeURIComponent)
+        .join('/')
+    } catch (err) {
+      toast(`Could not save image: ${errorMessage(err)}`)
+      return null
+    }
   }
+}
+
+const IMAGE_TYPES: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+  'image/bmp': 'bmp',
+  'image/avif': 'avif'
 }
 
 const view = new EditorView({ parent: ui.editor })
@@ -402,6 +434,56 @@ function toggleLivePreview(): void {
   updateModeToggle()
 }
 
+function openTablePicker(): void {
+  if (!current) return
+  const coords = view.coordsAtPos(view.state.selection.main.head)
+  const rect = ui.editor.getBoundingClientRect()
+  const anchor = coords ?? { left: rect.left + rect.width / 2 - 120, top: rect.top + 80, bottom: rect.top + 80 }
+  showTablePicker(anchor, (columns, rows) => runEditorCommand(insertTable(columns, rows)))
+}
+
+// ---- Theme ------------------------------------------------------------------------------------
+
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)')
+function updateThemeButton(): void {
+  document.body.classList.toggle('dark', darkQuery.matches)
+}
+darkQuery.addEventListener('change', updateThemeButton)
+
+// ---- Sidebar width ----------------------------------------------------------------------------
+
+const DEFAULT_SIDEBAR_WIDTH = 260
+function setSidebarWidth(px: number): number {
+  const max = Math.max(200, Math.min(600, window.innerWidth - 360))
+  const width = Math.round(Math.min(Math.max(px, 180), max))
+  document.documentElement.style.setProperty('--sidebar-width', `${width}px`)
+  return width
+}
+
+ui.resizer.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return
+  event.preventDefault()
+  ui.resizer.setPointerCapture(event.pointerId)
+  document.body.classList.add('resizing-sidebar')
+  const startX = event.clientX
+  const startWidth = ui.sidebar.getBoundingClientRect().width
+  let width = startWidth
+  const onMove = (e: PointerEvent): void => {
+    width = setSidebarWidth(startWidth + e.clientX - startX)
+  }
+  const onUp = (): void => {
+    ui.resizer.removeEventListener('pointermove', onMove)
+    ui.resizer.removeEventListener('pointerup', onUp)
+    ui.resizer.removeEventListener('pointercancel', onUp)
+    document.body.classList.remove('resizing-sidebar')
+    writePref('sidebarWidth', width)
+  }
+  ui.resizer.addEventListener('pointermove', onMove)
+  ui.resizer.addEventListener('pointerup', onUp)
+  ui.resizer.addEventListener('pointercancel', onUp)
+})
+ui.resizer.addEventListener('dblclick', () => writePref('sidebarWidth', setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)))
+
 function runEditorCommand(command: (view: EditorView) => boolean): void {
   if (!current) return
   command(view)
@@ -444,6 +526,8 @@ function handleMenuCommand(cmd: MenuCommand): void {
       return runEditorCommand(insertLink)
     case 'task':
       return runEditorCommand(toggleTask)
+    case 'insert-table':
+      return openTablePicker()
     default:
       if (cmd.startsWith('heading-')) runEditorCommand(setHeading(Number(cmd.slice(8))))
   }
@@ -457,6 +541,7 @@ byId('btn-open-vault').addEventListener('click', () => void openVault())
 byId('btn-switch-vault').addEventListener('click', () => void openVault())
 byId('btn-toggle-sidebar').addEventListener('click', toggleSidebar)
 ui.modeToggle.addEventListener('click', toggleLivePreview)
+byId('btn-theme').addEventListener('click', () => void api.setTheme(darkQuery.matches ? 'light' : 'dark'))
 
 api.onMenuCommand(handleMenuCommand)
 api.onVaultChanged((paths) => void handleVaultChanged(paths))
@@ -467,6 +552,8 @@ window.addEventListener('focus', () => {
 
 async function init(): Promise<void> {
   document.body.classList.toggle('sidebar-hidden', readPref('sidebarHidden', false))
+  setSidebarWidth(readPref('sidebarWidth', DEFAULT_SIDEBAR_WIDTH))
+  updateThemeButton()
   updateModeToggle()
   const [settings, vault] = await Promise.all([api.getSettings(), api.getVault()])
   if (!vault) {

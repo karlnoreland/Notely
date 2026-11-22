@@ -6,9 +6,15 @@ export interface NoteContext {
   resolveImage(src: string): string
   /** Follows a link (web URL or relative note path). */
   openLink(href: string): void
+  /** Stores a pasted image in the vault; returns the path to write in the note, or null. */
+  saveImage(file: File): Promise<string | null>
 }
 
-const fallback: NoteContext = { resolveImage: (src) => src, openLink: () => {} }
+const fallback: NoteContext = {
+  resolveImage: (src) => src,
+  openLink: () => {},
+  saveImage: async () => null
+}
 
 export const noteContext = Facet.define<NoteContext, NoteContext>({
   combine: (values) => values[0] ?? fallback

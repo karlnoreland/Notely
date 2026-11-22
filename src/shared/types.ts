@@ -25,10 +25,13 @@ export interface WindowState {
   maximized: boolean
 }
 
+export type ThemeSetting = 'system' | 'light' | 'dark'
+
 export interface Settings {
   vaultPath: string | null
   lastOpenFile: string | null
   spellcheck: SpellcheckSettings
+  theme: ThemeSetting
   window?: WindowState
 }
 
@@ -57,6 +60,7 @@ export type MenuCommand =
   | 'math'
   | 'link'
   | 'task'
+  | 'insert-table'
   | 'heading-0'
   | 'heading-1'
   | 'heading-2'
@@ -83,6 +87,9 @@ export interface NotelyApi {
   setLastOpenFile(path: string | null): Promise<void>
   openExternal(url: string): Promise<void>
   showItemMenu(path: string, kind: NodeKind): Promise<ItemAction | null>
+  /** Saves image bytes into the vault's attachments folder; returns the new vault-relative path. */
+  saveAttachment(extension: string, data: Uint8Array): Promise<string>
+  setTheme(theme: ThemeSetting): Promise<void>
   /** Paths are vault-relative; null means "something changed, unknown what". */
   onVaultChanged(cb: (paths: string[] | null) => void): () => void
   onMenuCommand(cb: (cmd: MenuCommand) => void): () => void
