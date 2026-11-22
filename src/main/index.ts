@@ -9,41 +9,82 @@ import {
   protocol,
   session,
   shell,
-  type MenuItemConstructorOptions
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+  type MenuItemConstructorOptions,
+  type WebContents
 } from 'electron'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { ItemAction, MenuCommand, NodeKind, ThemeSetting, VaultInfo } from '../shared/types'
+import type { ItemAction, MenuCommand, NodeKind, TableAction, ThemeSetting, VaultInfo } from '../shared/types'
 import { buildMenu } from './menu'
 import { SettingsStore } from './settings'
 import { Spellcheck } from './spellcheck'
 import { Vault } from './vault'
 
-// vault://local/<vault-relative path> serves files (images) from the open vault to the renderer.
+// vault://<window host>/<vault-relative path> serves files (images) from a window's folder.
 protocol.registerSchemesAsPrivileged([
   { scheme: 'vault', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
 
-let mainWindow: BrowserWindow | null = null
-let vault: Vault | null = null
+const NOTE_EXT = /\.(md|markdown)$/i
+
+/**
+ * Each window is either a vault window (folder + file tree) or a single-file window, which
+ * treats the file's folder as a small vault limited to that one file.
+ */
+interface WindowSession {
+  win: BrowserWindow
+  vault: Vault | null
+  /** Vault-relative path of the file in a single-file window, otherwise null. */
+  singleFile: string | null
+  /** Set just before a right-click inside a table cell. */
+  tableContextMenu: boolean
+}
+
+const sessions = new Map<number, WindowSession>()
 let settings: SettingsStore
 let spellcheck: Spellcheck
+/** Files the OS asked us to open before the app was ready (macOS open-file). */
+const pendingFiles: string[] = []
 
-function requireVault(): Vault {
-  if (!vault) throw new Error('No vault is open')
-  return vault
+const assetHost = (contents: WebContents): string => `s${contents.id}`
+
+function sessionOf(event: IpcMainInvokeEvent | IpcMainEvent): WindowSession {
+  const s = sessions.get(event.sender.id)
+  if (!s) throw new Error('Unknown window')
+  return s
 }
 
-function vaultInfo(): VaultInfo | null {
-  return vault ? { path: vault.root, name: vault.name } : null
+function vaultOf(event: IpcMainInvokeEvent | IpcMainEvent): Vault {
+  const v = sessionOf(event).vault
+  if (!v) throw new Error('No vault is open')
+  return v
 }
 
-async function setVault(dir: string | null): Promise<void> {
-  vault?.unwatch()
-  vault = dir ? await Vault.open(dir) : null
-  vault?.watch((paths) => mainWindow?.webContents.send('vault:changed', paths))
-  settings.update({ vaultPath: vault?.root ?? null })
+function infoOf(s: WindowSession): VaultInfo | null {
+  return s.vault
+    ? { path: s.vault.root, name: s.vault.name, assetHost: assetHost(s.win.webContents), singleFile: s.singleFile }
+    : null
+}
+
+/** The window that most recently showed the vault: it is the one whose state we remember. */
+const isVaultWindow = (s: WindowSession): boolean => s.singleFile === null
+
+async function setVault(s: WindowSession, dir: string | null): Promise<void> {
+  s.vault?.unwatch()
+  s.singleFile = null
+  s.vault = dir ? await Vault.open(dir) : null
+  s.vault?.watch((paths) => s.win.webContents.send('vault:changed', paths))
+  settings.update({ vaultPath: s.vault?.root ?? null })
+}
+
+async function setSingleFile(s: WindowSession, file: string): Promise<void> {
+  s.vault?.unwatch()
+  s.vault = await Vault.open(path.dirname(file))
+  s.singleFile = path.basename(file)
+  s.vault.watch((paths) => s.win.webContents.send('vault:changed', paths), false)
 }
 
 function openExternalSafely(url: string): void {
@@ -54,13 +95,14 @@ function openExternalSafely(url: string): void {
   }
 }
 
-function sendCommand(cmd: MenuCommand): void {
-  mainWindow?.webContents.send('menu:command', cmd)
+function sendCommand(cmd: MenuCommand, target?: WebContents): void {
+  const contents = target ?? BrowserWindow.getFocusedWindow()?.webContents ?? [...sessions.values()][0]?.win.webContents
+  contents?.send('menu:command', cmd)
 }
 
 function refreshMenu(): void {
   Menu.setApplicationMenu(
-    buildMenu({ send: sendCommand, spellcheck, theme: settings.get().theme, setTheme })
+    buildMenu({ send: (cmd) => sendCommand(cmd), spellcheck, theme: settings.get().theme, setTheme })
   )
 }
 
@@ -69,7 +111,7 @@ const backgroundColor = (): string => (nativeTheme.shouldUseDarkColors ? '#1e1e2
 /** themeSource also drives prefers-color-scheme in the renderer and the native menus/dialogs. */
 function applyTheme(theme: ThemeSetting): void {
   nativeTheme.themeSource = theme
-  mainWindow?.setBackgroundColor(backgroundColor())
+  for (const s of sessions.values()) s.win.setBackgroundColor(backgroundColor())
 }
 
 function setTheme(theme: ThemeSetting): void {
@@ -78,17 +120,45 @@ function setTheme(theme: ThemeSetting): void {
   refreshMenu()
 }
 
-function createWindow(): void {
-  const saved = settings.get().window
+function tableMenuItems(contents: WebContents): MenuItemConstructorOptions[] {
+  const item = (label: string, action: TableAction): MenuItemConstructorOptions => ({
+    label,
+    click: () => sendCommand(`table:${action}`, contents)
+  })
+  return [
+    item('Insert Row Above', 'row-above'),
+    item('Insert Row Below', 'row-below'),
+    item('Insert Column Left', 'col-left'),
+    item('Insert Column Right', 'col-right'),
+    { type: 'separator' },
+    item('Delete Row', 'delete-row'),
+    item('Delete Column', 'delete-col'),
+    {
+      label: 'Align Column',
+      submenu: [
+        item('Left', 'align-left'),
+        item('Center', 'align-center'),
+        item('Right', 'align-right'),
+        item('Default', 'align-none')
+      ]
+    },
+    { type: 'separator' },
+    item('Edit Table as Markdown', 'edit-source'),
+    item('Delete Table', 'delete-table')
+  ]
+}
+
+function createWindow(file?: string): WindowSession {
+  const saved = file ? undefined : settings.get().window
   const win = new BrowserWindow({
-    width: saved?.width ?? 1200,
-    height: saved?.height ?? 800,
+    width: saved?.width ?? (file ? 900 : 1200),
+    height: saved?.height ?? (file ? 760 : 800),
     x: saved?.x,
     y: saved?.y,
-    minWidth: 560,
-    minHeight: 400,
+    minWidth: 480,
+    minHeight: 360,
     show: false,
-    title: 'Notely',
+    title: file ? path.basename(file) : 'Notely',
     backgroundColor: backgroundColor(),
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 13 } }
@@ -101,15 +171,20 @@ function createWindow(): void {
       spellcheck: true
     }
   })
-  mainWindow = win
+  const s: WindowSession = { win, vault: null, singleFile: null, tableContextMenu: false }
+  const id = win.webContents.id
+  sessions.set(id, s)
   if (saved?.maximized) win.maximize()
 
   win.once('ready-to-show', () => win.show())
   win.on('close', () => {
-    settings.update({ window: { ...win.getNormalBounds(), maximized: win.isMaximized() } })
+    if (isVaultWindow(s)) {
+      settings.update({ window: { ...win.getNormalBounds(), maximized: win.isMaximized() } })
+    }
   })
   win.on('closed', () => {
-    if (mainWindow === win) mainWindow = null
+    s.vault?.unwatch()
+    sessions.delete(id)
   })
 
   // Never navigate the app window away; open web links in the browser instead.
@@ -124,21 +199,70 @@ function createWindow(): void {
     }
   })
 
-  spellcheck.attach(win.webContents, (params) =>
+  spellcheck.attach(win.webContents, (params) => {
+    if (s.tableContextMenu) {
+      s.tableContextMenu = false
+      return tableMenuItems(win.webContents)
+    }
     // formControlType is 'none' for the contenteditable editor, but not for text inputs.
-    params.isEditable && params.formControlType === 'none'
-      ? [{ label: 'Insert Table…', click: () => sendCommand('insert-table') }]
+    return params.isEditable && params.formControlType === 'none'
+      ? [{ label: 'Insert Table…', click: () => sendCommand('insert-table', win.webContents) }]
       : []
-  )
+  })
 
   if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
     void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     void win.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+  return s
 }
 
-function showItemMenu(sender: Electron.WebContents, rel: string, kind: NodeKind): Promise<ItemAction | null> {
+async function createVaultWindow(): Promise<void> {
+  const s = createWindow()
+  const savedVault = settings.get().vaultPath
+  if (savedVault && existsSync(savedVault)) {
+    await setVault(s, savedVault).catch((err) => {
+      console.error('Could not reopen vault', err)
+      return setVault(s, null)
+    })
+  }
+}
+
+/** Opens `file` in its own window, or focuses the window that already has it. */
+async function openFileWindow(file: string): Promise<void> {
+  const abs = path.resolve(file)
+  for (const s of sessions.values()) {
+    if (s.vault && s.singleFile && path.join(s.vault.root, s.singleFile) === abs) {
+      if (s.win.isMinimized()) s.win.restore()
+      s.win.focus()
+      return
+    }
+  }
+  const s = createWindow(abs)
+  try {
+    await setSingleFile(s, abs)
+  } catch (err) {
+    s.win.destroy()
+    dialog.showErrorBox('Could not open file', String(err))
+  }
+}
+
+function filesFromArgs(args: string[], cwd: string): string[] {
+  return args
+    .filter((a) => !a.startsWith('-') && NOTE_EXT.test(a))
+    .map((a) => path.resolve(cwd, a))
+    .filter((p) => {
+      try {
+        return statSync(p).isFile()
+      } catch {
+        return false
+      }
+    })
+}
+
+function showItemMenu(event: IpcMainInvokeEvent, rel: string, kind: NodeKind): Promise<ItemAction | null> {
+  const vault = vaultOf(event)
   return new Promise((resolve) => {
     let settled = false
     const pick = (action: ItemAction | null): void => {
@@ -160,7 +284,7 @@ function showItemMenu(sender: Electron.WebContents, rel: string, kind: NodeKind)
     template.push({
       label: process.platform === 'darwin' ? 'Reveal in Finder' : 'Show in File Manager',
       click: () => {
-        const abs = requireVault().resolve(rel)
+        const abs = vault.resolve(rel)
         if (isRoot) void shell.openPath(abs)
         else shell.showItemInFolder(abs)
         pick(null)
@@ -168,7 +292,7 @@ function showItemMenu(sender: Electron.WebContents, rel: string, kind: NodeKind)
     })
     if (!isRoot) template.push({ type: 'separator' }, { label: 'Delete', click: () => pick('delete') })
     Menu.buildFromTemplate(template).popup({
-      window: BrowserWindow.fromWebContents(sender) ?? undefined,
+      window: BrowserWindow.fromWebContents(event.sender) ?? undefined,
       // The close callback can fire before the click handler; give the click a moment to win.
       callback: () => setTimeout(() => pick(null), 100)
     })
@@ -177,103 +301,159 @@ function showItemMenu(sender: Electron.WebContents, rel: string, kind: NodeKind)
 
 function registerIpc(): void {
   ipcMain.handle('settings:get', () => settings.get())
-  ipcMain.handle('settings:set-last-file', (_e, rel: string | null) => settings.update({ lastOpenFile: rel }))
+  ipcMain.handle('settings:set-last-file', (e, rel: string | null) => {
+    if (isVaultWindow(sessionOf(e))) settings.update({ lastOpenFile: rel })
+  })
 
-  ipcMain.handle('vault:info', () => vaultInfo())
-  ipcMain.handle('vault:open-dialog', async () => {
-    const options: Electron.OpenDialogOptions = {
+  ipcMain.handle('vault:info', (e) => infoOf(sessionOf(e)))
+  ipcMain.handle('vault:open-dialog', async (e) => {
+    const s = sessionOf(e)
+    const result = await dialog.showOpenDialog(s.win, {
       title: 'Open folder as vault',
       buttonLabel: 'Open Vault',
       properties: ['openDirectory', 'createDirectory']
-    }
-    const result = mainWindow
-      ? await dialog.showOpenDialog(mainWindow, options)
-      : await dialog.showOpenDialog(options)
+    })
     const dir = result.filePaths[0]
     if (result.canceled || !dir) return null
-    await setVault(dir)
+    await setVault(s, dir)
     settings.update({ lastOpenFile: null })
-    return vaultInfo()
+    return infoOf(s)
   })
-  ipcMain.handle('vault:tree', () => (vault ? vault.tree() : null))
-  ipcMain.handle('vault:read', (_e, rel: string) => requireVault().read(rel))
-  ipcMain.handle('vault:write', (_e, rel: string, content: string) => requireVault().write(rel, content))
-  ipcMain.on('vault:write-sync', (event, rel: string, content: string) => {
+  ipcMain.handle('file:open-dialog', async (e) => {
+    const s = sessionOf(e)
+    const result = await dialog.showOpenDialog(s.win, {
+      title: 'Open Markdown file',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Markdown', extensions: ['md', 'markdown'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    })
+    const file = result.filePaths[0]
+    if (result.canceled || !file) return null
+    if (!s.vault) {
+      // The welcome screen: use this window instead of opening another one.
+      await setSingleFile(s, file)
+      return infoOf(s)
+    }
+    await openFileWindow(file)
+    return null
+  })
+  ipcMain.handle('file:open-window', async (e, rel: string) => {
+    const abs = vaultOf(e).resolve(rel)
+    if (!existsSync(abs)) return false
+    await openFileWindow(abs)
+    return true
+  })
+  ipcMain.on('menu:mark-table', (e) => {
+    sessionOf(e).tableContextMenu = true
+    e.returnValue = true
+  })
+
+  ipcMain.handle('vault:tree', (e) => {
+    const s = sessionOf(e)
+    return s.vault && isVaultWindow(s) ? s.vault.tree() : null
+  })
+  ipcMain.handle('vault:read', (e, rel: string) => vaultOf(e).read(rel))
+  ipcMain.handle('vault:write', (e, rel: string, content: string) => vaultOf(e).write(rel, content))
+  ipcMain.on('vault:write-sync', (e, rel: string, content: string) => {
     try {
-      requireVault().writeSync(rel, content)
-      event.returnValue = true
+      vaultOf(e).writeSync(rel, content)
+      e.returnValue = true
     } catch (err) {
       console.error('Failed to save on close', err)
-      event.returnValue = false
+      e.returnValue = false
     }
   })
-  ipcMain.handle('vault:create-note', (_e, dir: string) => requireVault().createNote(dir))
-  ipcMain.handle('vault:create-folder', (_e, dir: string) => requireVault().createFolder(dir))
-  ipcMain.handle('vault:save-attachment', (_e, ext: string, data: Uint8Array) =>
-    requireVault().saveAttachment(ext, data)
-  )
+  ipcMain.handle('vault:create-note', (e, dir: string) => vaultOf(e).createNote(dir))
+  ipcMain.handle('vault:create-folder', (e, dir: string) => vaultOf(e).createFolder(dir))
+  ipcMain.handle('vault:save-attachment', (e, ext: string, data: Uint8Array) => {
+    // Single-file windows put images next to the file rather than creating attachments/.
+    const s = sessionOf(e)
+    return vaultOf(e).saveAttachment(ext, data, s.singleFile ? '' : undefined)
+  })
   ipcMain.handle('theme:set', (_e, theme: ThemeSetting) => {
     if (theme === 'system' || theme === 'light' || theme === 'dark') setTheme(theme)
   })
-  ipcMain.handle('vault:rename', (_e, rel: string, name: string) => requireVault().rename(rel, name))
-  ipcMain.handle('vault:trash', async (_e, rel: string) => {
-    const v = requireVault()
+  ipcMain.handle('vault:rename', (e, rel: string, name: string) => vaultOf(e).rename(rel, name))
+  ipcMain.handle('vault:trash', async (e, rel: string) => {
+    const s = sessionOf(e)
+    const v = vaultOf(e)
     const abs = v.resolve(rel)
     if (abs === v.root) throw new Error('The vault folder itself cannot be deleted here')
-    const options: Electron.MessageBoxOptions = {
+    const { response } = await dialog.showMessageBox(s.win, {
       type: 'warning',
       buttons: ['Move to Trash', 'Cancel'],
       defaultId: 1,
       cancelId: 1,
       message: `Move “${path.basename(abs)}” to the trash?`,
       detail: 'You can restore it from your system trash.'
-    }
-    const { response } = mainWindow
-      ? await dialog.showMessageBox(mainWindow, options)
-      : await dialog.showMessageBox(options)
+    })
     if (response !== 0) return false
     await shell.trashItem(abs)
     return true
   })
 
   ipcMain.handle('shell:open-external', (_e, url: string) => openExternalSafely(url))
-  ipcMain.handle('menu:item', (e, rel: string, kind: NodeKind) => showItemMenu(e.sender, rel, kind))
+  ipcMain.handle('menu:item', (e, rel: string, kind: NodeKind) => showItemMenu(e, rel, kind))
 }
 
 app.setName('Notely')
 
-void app.whenReady().then(async () => {
-  settings = new SettingsStore()
-  applyTheme(settings.get().theme)
-
-  const savedVault = settings.get().vaultPath
-  if (savedVault && existsSync(savedVault)) {
-    await setVault(savedVault).catch((err) => {
-      console.error('Could not reopen vault', err)
-      return setVault(null)
-    })
-  }
-
-  protocol.handle('vault', async (request) => {
-    try {
-      const rel = decodeURIComponent(new URL(request.url).pathname).replace(/^\/+/, '')
-      return await net.fetch(pathToFileURL(requireVault().resolve(rel)).toString())
-    } catch {
-      return new Response('Not found', { status: 404 })
+// One app instance: opening a file while Notely runs gives it a window in the running app.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv, cwd) => {
+    const files = filesFromArgs(argv.slice(1), cwd)
+    if (files.length) for (const f of files) void openFileWindow(f)
+    else if (sessions.size === 0) void createVaultWindow()
+    else {
+      const win = [...sessions.values()][0].win
+      if (win.isMinimized()) win.restore()
+      win.focus()
     }
   })
 
-  spellcheck = new Spellcheck(session.defaultSession, settings, refreshMenu)
-  spellcheck.apply()
-  refreshMenu()
-  registerIpc()
-  createWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  // macOS: files opened from Finder or dropped on the Dock icon.
+  app.on('open-file', (event, file) => {
+    event.preventDefault()
+    if (app.isReady()) void openFileWindow(file)
+    else pendingFiles.push(file)
   })
-})
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+  void app.whenReady().then(async () => {
+    settings = new SettingsStore()
+    applyTheme(settings.get().theme)
+
+    protocol.handle('vault', async (request) => {
+      try {
+        const url = new URL(request.url)
+        const s = [...sessions.values()].find((x) => assetHost(x.win.webContents) === url.hostname)
+        if (!s?.vault) throw new Error('No vault')
+        const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '')
+        return await net.fetch(pathToFileURL(s.vault.resolve(rel)).toString())
+      } catch {
+        return new Response('Not found', { status: 404 })
+      }
+    })
+
+    spellcheck = new Spellcheck(session.defaultSession, settings, refreshMenu)
+    spellcheck.apply()
+    refreshMenu()
+    registerIpc()
+
+    // `notely notes.md` (or Open With… from a file manager) opens just that file.
+    const files = [...pendingFiles, ...filesFromArgs(process.argv.slice(app.isPackaged ? 1 : 2), process.cwd())]
+    if (files.length) for (const f of files) await openFileWindow(f)
+    else await createVaultWindow()
+
+    app.on('activate', () => {
+      if (sessions.size === 0) void createVaultWindow()
+    })
+  })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+}

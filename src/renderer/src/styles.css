@@ -120,7 +120,9 @@ kbd {
   border-right: 1px solid var(--border);
 }
 
-body.sidebar-hidden #sidebar {
+body.sidebar-hidden #sidebar,
+body.single-file #sidebar,
+body.single-file #btn-toggle-sidebar {
   display: none;
 }
 
@@ -211,7 +213,8 @@ body.platform-darwin button,
 body.platform-darwin input {
   -webkit-app-region: no-drag;
 }
-body.platform-darwin.sidebar-hidden #topbar {
+body.platform-darwin.sidebar-hidden #topbar,
+body.platform-darwin.single-file #topbar {
   padding-left: 80px;
 }
 
@@ -329,6 +332,27 @@ body.dark #btn-theme .icon-sun {
 
 .primary-btn:hover {
   filter: brightness(1.08);
+}
+
+.secondary-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 18px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.secondary-btn:hover {
+  background: var(--bg-hover);
+}
+
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
 }
 
 /* ---- File tree ----------------------------------------------------------------------- */
@@ -688,10 +712,16 @@ body.dark #btn-theme .icon-sun {
   border-radius: 4px;
 }
 
-/* Tables */
+/* Tables (rendered, edited cell by cell) */
 #editor .cm-table-wrap {
-  overflow-x: auto;
   padding: 6px 0;
+  overflow-x: auto;
+}
+
+#editor .cm-table-inner {
+  display: inline-grid;
+  grid-template-columns: auto 18px;
+  gap: 3px;
 }
 
 #editor .cm-table {
@@ -715,6 +745,28 @@ body.dark #btn-theme .icon-sun {
   font-weight: 600;
 }
 
+#editor .cm-table .cm-cell-active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+#editor .cm-cell-input {
+  display: block;
+  width: 100%;
+  min-width: 2ch;
+  field-sizing: content;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  text-align: inherit;
+}
+
 #editor .cm-table code {
   background: var(--code-bg);
   border-radius: 4px;
@@ -726,6 +778,35 @@ body.dark #btn-theme .icon-sun {
 #editor .cm-table-link {
   color: var(--link);
   text-decoration: underline;
+}
+
+/* "+" buttons to add a column (right) and a row (below); visible on hover */
+#editor .cm-table-add-col,
+#editor .cm-table-add-row {
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: transparent;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+#editor .cm-table-add-row {
+  height: 16px;
+}
+
+#editor .cm-table-wrap:hover .cm-table-add-col,
+#editor .cm-table-wrap:hover .cm-table-add-row {
+  background: var(--bg-hover);
+  color: var(--text-faint);
+}
+
+#editor .cm-table-add-col:hover,
+#editor .cm-table-add-row:hover {
+  background: var(--bg-active) !important;
+  color: var(--accent) !important;
 }
 
 #editor .cm-table-line {

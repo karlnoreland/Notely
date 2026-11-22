@@ -36,9 +36,28 @@ export interface Settings {
 }
 
 export interface VaultInfo {
+  /** Folder on disk (for a single-file window: the file's folder). */
   path: string
   name: string
+  /** Host part of vault:// URLs for this window, e.g. "s3". */
+  assetHost: string
+  /** Set when the window edits one file instead of a vault (vault-relative, i.e. just the name). */
+  singleFile: string | null
 }
+
+export type TableAction =
+  | 'row-above'
+  | 'row-below'
+  | 'col-left'
+  | 'col-right'
+  | 'delete-row'
+  | 'delete-col'
+  | 'align-left'
+  | 'align-center'
+  | 'align-right'
+  | 'align-none'
+  | 'edit-source'
+  | 'delete-table'
 
 export type ItemAction = 'new-note' | 'new-folder' | 'rename' | 'delete'
 
@@ -47,6 +66,7 @@ export type MenuCommand =
   | 'new-note'
   | 'new-folder'
   | 'open-vault'
+  | 'open-file'
   | 'save'
   | 'undo'
   | 'redo'
@@ -68,12 +88,22 @@ export type MenuCommand =
   | 'heading-4'
   | 'heading-5'
   | 'heading-6'
+  | `table:${TableAction}`
 
 export interface NotelyApi {
   platform: string
   getSettings(): Promise<Settings>
   getVault(): Promise<VaultInfo | null>
   openVaultDialog(): Promise<VaultInfo | null>
+  /**
+   * Picks a Markdown file. An empty window (welcome screen) loads it itself and gets its info
+   * back; otherwise the file opens in a new window and this resolves to null.
+   */
+  openFileDialog(): Promise<VaultInfo | null>
+  /** Opens a vault-relative note in its own single-file window. */
+  openNoteWindow(path: string): Promise<boolean>
+  /** Called synchronously from a table cell's contextmenu event so the native menu adds table actions. */
+  markTableContextMenu(): void
   listTree(): Promise<TreeNode | null>
   readFile(path: string): Promise<string>
   writeFile(path: string, content: string): Promise<void>

@@ -32,6 +32,7 @@ export function buildMenu({ send, spellcheck, theme, setTheme }: MenuContext): M
         cmd('New Folder', 'new-folder', 'CmdOrCtrl+Shift+N'),
         sep,
         cmd('Open Vault…', 'open-vault', 'CmdOrCtrl+O'),
+        cmd('Open File…', 'open-file', 'CmdOrCtrl+Shift+O'),
         cmd('Save', 'save', 'CmdOrCtrl+S'),
         sep,
         isMac ? { role: 'close' } : { role: 'quit' }

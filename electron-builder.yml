@@ -6,6 +6,12 @@ directories:
 files:
   - out/**/*
   - package.json
+fileAssociations:
+  - ext: [md, markdown]
+    name: Markdown
+    description: Markdown document
+    mimeType: text/markdown
+    role: Editor
 linux:
   target:
     - AppImage

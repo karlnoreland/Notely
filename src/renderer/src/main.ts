@@ -5,11 +5,11 @@ import { redo, undo } from '@codemirror/commands'
 import { openSearchPanel } from '@codemirror/search'
 import type { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import type { MenuCommand, TreeNode } from '../../shared/types'
+import type { MenuCommand, TableAction, TreeNode, VaultInfo } from '../../shared/types'
 import { insertLink, setHeading, toggleInline, toggleTask } from './editor/commands'
 import type { NoteContext } from './editor/context'
 import { createEditorState, externalChange, setLivePreview } from './editor/setup'
-import { insertTable } from './editor/table'
+import { formatActiveCell, insertTable, isEditingTableCell, runTableAction } from './editor/table'
 import { basename, dirname, isInside, NOTE_EXT, relativePath, resolvePath, stripNoteExt, vaultUrl } from './paths'
 import { FileTree } from './sidebar'
 import { showTablePicker } from './tablePicker'
@@ -57,6 +57,10 @@ function writePref(key: string, value: unknown): void {
 // ---- State ------------------------------------------------------------------------------------
 
 let vaultTree: TreeNode | null = null
+/** Host of vault:// URLs for this window. */
+let assetHost = 'local'
+/** True when this window edits a single file instead of a vault. */
+let singleFileMode = false
 let current: string | null = null
 let dirty = false
 let saveTimer: number | undefined
@@ -75,7 +79,7 @@ const context: NoteContext = {
       // Keep as written.
     }
     const rel = resolvePath(current ? dirname(current) : '', target)
-    return rel === null ? '' : vaultUrl(rel)
+    return rel === null ? '' : vaultUrl(assetHost, rel)
   },
   openLink(href) {
     void followLink(href)
@@ -97,6 +101,9 @@ const context: NoteContext = {
       toast(`Could not save image: ${errorMessage(err)}`)
       return null
     }
+  },
+  markTableContextMenu() {
+    api.markTableContextMenu()
   }
 }
 
@@ -206,6 +213,7 @@ function findNode(node: TreeNode | null, path: string): TreeNode | null {
 }
 
 async function refreshTree(): Promise<void> {
+  if (singleFileMode) return
   vaultTree = await api.listTree()
   fileTree.setTree(vaultTree)
 }
@@ -286,7 +294,10 @@ async function followLink(href: string): Promise<void> {
   let rel = resolvePath(current ? dirname(current) : '', target)
   if (rel === null) return
   if (!NOTE_EXT.test(rel)) rel += '.md'
-  if (findNode(vaultTree, rel)) await openFile(rel)
+  if (singleFileMode) {
+    // No vault here: open the linked note in a window of its own.
+    if (!(await api.openNoteWindow(rel))) toast(`Note not found: ${rel}`)
+  } else if (findNode(vaultTree, rel)) await openFile(rel)
   else toast(`Note not found: ${rel}`)
 }
 
@@ -378,10 +389,19 @@ const fileTree = new FileTree(ui.tree, {
 
 // ---- Vault ------------------------------------------------------------------------------------
 
-async function loadVault(name: string): Promise<void> {
+function enterWindowMode(info: VaultInfo): void {
+  assetHost = info.assetHost
+  singleFileMode = info.singleFile !== null
+  document.body.classList.toggle('single-file', singleFileMode)
+  ui.welcome.hidden = true
+  ui.app.hidden = false
+}
+
+async function loadVault(info: VaultInfo): Promise<void> {
+  enterWindowMode(info)
   stateCache.clear()
   closeFile()
-  ui.vaultName.textContent = name
+  ui.vaultName.textContent = info.name
   ui.welcome.hidden = true
   ui.app.hidden = false
   await refreshTree()
@@ -391,9 +411,28 @@ async function openVault(): Promise<void> {
   await save() // the main process switches folders as soon as one is picked
   try {
     const info = await api.openVaultDialog()
-    if (info) await loadVault(info.name)
+    if (info) await loadVault(info)
   } catch (err) {
     toast(`Could not open vault: ${errorMessage(err)}`)
+  }
+}
+
+/** Single-file window: just this note, no sidebar. */
+async function loadSingleFile(info: VaultInfo): Promise<void> {
+  enterWindowMode(info)
+  vaultTree = null
+  fileTree.setTree(null)
+  await openFile(info.singleFile!)
+  ui.title.title = `${info.path}/${info.singleFile}`
+}
+
+/** Picks a file: an empty window opens it itself, otherwise it gets a window of its own. */
+async function openSingleFile(): Promise<void> {
+  try {
+    const info = await api.openFileDialog()
+    if (info) await loadSingleFile(info)
+  } catch (err) {
+    toast(`Could not open file: ${errorMessage(err)}`)
   }
 }
 
@@ -401,7 +440,7 @@ async function openVault(): Promise<void> {
 async function handleVaultChanged(paths: string[] | null): Promise<void> {
   await refreshTree()
   if (!current) return
-  if (!findNode(vaultTree, current)) {
+  if (!singleFileMode && !findNode(vaultTree, current)) {
     closeFile()
     return
   }
@@ -484,6 +523,16 @@ ui.resizer.addEventListener('pointerdown', (event) => {
 })
 ui.resizer.addEventListener('dblclick', () => writePref('sidebarWidth', setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)))
 
+/** Inline formatting applies to the focused table cell when one is being edited. */
+function formatCommand(marker: string): void {
+  if (!formatActiveCell(marker)) runEditorCommand(toggleInline(marker))
+}
+
+function vaultOnly(action: () => void): void {
+  if (singleFileMode) toast('This window shows a single file. Open a vault (Ctrl+O) to manage notes.')
+  else action()
+}
+
 function runEditorCommand(command: (view: EditorView) => boolean): void {
   if (!current) return
   command(view)
@@ -493,35 +542,38 @@ function runEditorCommand(command: (view: EditorView) => boolean): void {
 function handleMenuCommand(cmd: MenuCommand): void {
   switch (cmd) {
     case 'new-note':
-      return void createNote()
+      return vaultOnly(() => void createNote())
     case 'new-folder':
-      return void createFolder()
+      return vaultOnly(() => void createFolder())
     case 'open-vault':
       return void openVault()
+    case 'open-file':
+      return void openSingleFile()
     case 'save':
       return void save()
     case 'toggle-sidebar':
-      return toggleSidebar()
+      return singleFileMode ? undefined : toggleSidebar()
     case 'toggle-live-preview':
       return toggleLivePreview()
     case 'undo':
     case 'redo':
-      // Outside the editor (e.g. the rename box) fall back to the browser's own undo.
-      if (view.hasFocus) (cmd === 'undo' ? undo : redo)(view)
+      // Table cells share the editor's history. Elsewhere outside the editor (e.g. the
+      // rename box) fall back to the browser's own undo.
+      if (view.hasFocus || isEditingTableCell()) (cmd === 'undo' ? undo : redo)(view)
       else document.execCommand(cmd)
       return
     case 'find':
       return runEditorCommand(openSearchPanel)
     case 'bold':
-      return runEditorCommand(toggleInline('**'))
+      return formatCommand('**')
     case 'italic':
-      return runEditorCommand(toggleInline('*'))
+      return formatCommand('*')
     case 'strikethrough':
-      return runEditorCommand(toggleInline('~~'))
+      return formatCommand('~~')
     case 'code':
-      return runEditorCommand(toggleInline('`'))
+      return formatCommand('`')
     case 'math':
-      return runEditorCommand(toggleInline('$'))
+      return formatCommand('$')
     case 'link':
       return runEditorCommand(insertLink)
     case 'task':
@@ -530,6 +582,7 @@ function handleMenuCommand(cmd: MenuCommand): void {
       return openTablePicker()
     default:
       if (cmd.startsWith('heading-')) runEditorCommand(setHeading(Number(cmd.slice(8))))
+      else if (cmd.startsWith('table:')) runTableAction(cmd.slice(6) as TableAction)
   }
 }
 
@@ -538,6 +591,7 @@ function handleMenuCommand(cmd: MenuCommand): void {
 byId('btn-new-note').addEventListener('click', () => void createNote())
 byId('btn-new-folder').addEventListener('click', () => void createFolder())
 byId('btn-open-vault').addEventListener('click', () => void openVault())
+byId('btn-open-file').addEventListener('click', () => void openSingleFile())
 byId('btn-switch-vault').addEventListener('click', () => void openVault())
 byId('btn-toggle-sidebar').addEventListener('click', toggleSidebar)
 ui.modeToggle.addEventListener('click', toggleLivePreview)
@@ -560,7 +614,8 @@ async function init(): Promise<void> {
     ui.welcome.hidden = false
     return
   }
-  await loadVault(vault.name)
+  if (vault.singleFile !== null) return loadSingleFile(vault)
+  await loadVault(vault)
   if (settings.lastOpenFile && findNode(vaultTree, settings.lastOpenFile)) {
     await openFile(settings.lastOpenFile)
   }

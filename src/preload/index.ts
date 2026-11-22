@@ -14,6 +14,11 @@ const api: NotelyApi = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   getVault: () => ipcRenderer.invoke('vault:info'),
   openVaultDialog: () => ipcRenderer.invoke('vault:open-dialog'),
+  openFileDialog: () => ipcRenderer.invoke('file:open-dialog'),
+  openNoteWindow: (path) => ipcRenderer.invoke('file:open-window', path),
+  markTableContextMenu: () => {
+    ipcRenderer.sendSync('menu:mark-table')
+  },
   listTree: () => ipcRenderer.invoke('vault:tree'),
   readFile: (path) => ipcRenderer.invoke('vault:read', path),
   writeFile: (path, content) => ipcRenderer.invoke('vault:write', path, content),

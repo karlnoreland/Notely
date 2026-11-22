@@ -11,8 +11,15 @@ A Markdown note-taking app for Linux and macOS with Obsidian-style live preview.
   placeholders you fill in using Tab) and inside code blocks: keywords, built-ins and snippets for
   Python, JavaScript/TypeScript, HTML, Swift and Bash, plus identifiers already used in the block
   for any language. Prose never shows a popup.
-- **Tables:** right-click › *Insert Table…* (or `Ctrl+Shift+T`) opens a size picker. Tables
-  render as real tables, and clicking a cell jumps to its source.
+- **Tables** stay rendered while you edit them. Click a cell to edit it: that cell shows its
+  raw Markdown, the rest stay rendered. Tab / Shift+Tab and Enter move between cells (Tab in
+  the last cell adds a row), the arrow keys move in and out of the table, and the + buttons
+  add a row or column. Right-click a cell to insert/delete rows and columns, align a column,
+  or *Edit Table as Markdown*. The Markdown is kept neatly column-aligned. Insert a new table
+  with right-click › *Insert Table…* (or `Ctrl+Shift+T`).
+- **Single files:** *File › Open File…* (`Ctrl+Shift+O`), the welcome screen, `notely file.md`
+  or *Open With* in your file manager opens just that file in its own window, with no
+  sidebar, for quick edits. Pasted images go next to the file.
 - **Images:** paste or drop an image into a note. It is saved to the vault's `attachments/`
   folder, linked, and displayed.
 - **LaTeX math** with KaTeX: `$inline$`, `$$display$$` and multi-line `$$ … $$` blocks.
@@ -61,7 +68,7 @@ in place and electron-builder will pick it up.
 | Action | Shortcut |
 | --- | --- |
 | New note / new folder | `Ctrl+N` / `Ctrl+Shift+N` |
-| Open vault | `Ctrl+O` |
+| Open vault / open single file | `Ctrl+O` / `Ctrl+Shift+O` |
 | Bold / italic / strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+Shift+X` |
 | Inline code / inline math / link | `Ctrl+E` / `Ctrl+Shift+M` / `Ctrl+K` |
 | Toggle task checkbox | `Ctrl+L` |
@@ -78,7 +85,7 @@ in place and electron-builder will pick it up.
 ```
 src/
   main/            Electron main process
-    index.ts         window, IPC handlers, vault:// protocol for images
+    index.ts         windows (one session each: vault or single file), IPC, vault:// protocol
     vault.ts         file system access, sandboxed to the vault folder; atomic writes; watcher
     spellcheck.ts    Chromium spellchecker: languages, context menu with suggestions
     menu.ts          application menu (formatting shortcuts live here)
@@ -94,7 +101,7 @@ src/
       math.ts          Lezer Markdown extension for $…$ and $$…$$ with nested LaTeX parsing
       livePreview.ts   the live-preview decorations (what is hidden or rendered, and when)
       widgets.ts       rendered math (KaTeX), images, checkboxes, bullets, rules, copy button
-      table.ts         table parsing, rendering and the insert-table command
+      table.ts         tables: parsing, the editable table widget, insert command
       completion.ts    LaTeX and code-block autocomplete
       paste.ts         pasting/dropping images
       commands.ts      formatting commands
@@ -111,24 +118,6 @@ with a rendered widget. Reveal rules:
 - inline syntax (bold, italic, links, inline code and math) is revealed when the cursor
   touches that element
 - fenced code and display math are revealed when the cursor is on any line of the block
-
-## Why Electron rather than Tauri
-
-1. **Spell checking.** Electron ships Chromium's spellchecker. On Linux it uses Hunspell
-   dictionaries with any number of languages active at once, set from the app. On macOS it
-   uses the native system spellchecker. Tauri renders with the system webview: WebKitGTK on
-   Linux and WKWebView on macOS. Neither lets the app choose spellcheck languages, and
-   WebKitGTK's support depends on the distribution's enchant setup. Getting reliable
-   multi-language checking there means a JavaScript spellchecker with hand-drawn squiggles.
-2. **One rendering engine.** The live-preview editor depends heavily on contenteditable,
-   selection and IME behaviour. Electron gives identical Chromium behaviour on both
-   platforms, while WebKitGTK has known performance and input quirks with editors like
-   CodeMirror.
-3. **Proven path.** This is the stack Obsidian is built on.
-
-The cost is size: an Electron build is about 100 MB against about 10 MB for Tauri, and it
-uses more memory. For a desktop note-taking app, that trade-off is worth reliable spell
-checking and consistent editing.
 
 ### Spell checking per platform
 

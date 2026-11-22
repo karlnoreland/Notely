@@ -124,11 +124,11 @@ export class Vault {
     }
   }
 
-  /** Writes a pasted/dropped image to attachments/pasted-image-YYYYMMDD-HHMMSS.<ext>. */
-  async saveAttachment(extension: string, data: Uint8Array): Promise<string> {
+  /** Writes a pasted/dropped image to <dirRel>/pasted-image-YYYYMMDD-HHMMSS.<ext>. */
+  async saveAttachment(extension: string, data: Uint8Array, dirRel = ATTACHMENTS_DIR): Promise<string> {
     const ext = extension.toLowerCase().replace(/^\./, '')
     if (!IMAGE_EXT.test(ext)) throw new Error(`Unsupported image type: ${extension}`)
-    const dir = this.resolve(ATTACHMENTS_DIR)
+    const dir = this.resolve(dirRel)
     await fs.mkdir(dir, { recursive: true })
     const d = new Date()
     const pad = (n: number): string => String(n).padStart(2, '0')
@@ -160,7 +160,8 @@ export class Vault {
     return this.toRel(target)
   }
 
-  watch(onChange: (paths: string[] | null) => void): void {
+  /** Non-recursive watching is used for single-file windows, whose folder may be large (e.g. ~). */
+  watch(onChange: (paths: string[] | null) => void, recursive = true): void {
     this.unwatch()
     let pending = new Set<string>()
     let unknown = false
@@ -171,7 +172,7 @@ export class Vault {
       unknown = false
     }
     try {
-      this.watcher = watch(this.root, { recursive: true }, (_event, filename) => {
+      this.watcher = watch(this.root, { recursive }, (_event, filename) => {
         if (filename) {
           const rel = filename.toString().split(path.sep).join('/')
           if (rel.split('/').some(isHidden)) return

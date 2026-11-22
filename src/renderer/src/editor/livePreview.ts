@@ -15,11 +15,11 @@
 // replaces whole lines, which CodeMirror only allows for directly provided decorations.
 
 import { syntaxTree } from '@codemirror/language'
-import { StateField, type EditorState, type Range } from '@codemirror/state'
+import { StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import { IterMode } from '@lezer/common'
 import { mathSource } from './math'
-import { parseTable, TableWidget } from './table'
+import { isRawTable, parseTable, rawTableField, tableEditing, TableWidget } from './table'
 import { BulletWidget, CheckboxWidget, CodeCopyWidget, HrWidget, ImageWidget, MathWidget } from './widgets'
 
 const noSpell = { spellcheck: 'false' }
@@ -167,8 +167,10 @@ function buildDecorations(state: EditorState): DecorationSet {
         }
 
         case 'Table': {
+          // Tables stay rendered (and editable cell by cell) wherever the cursor is, unless
+          // "Edit Table as Markdown" was chosen. Tables inside quotes/lists stay as source.
           const startsLine = doc.lineAt(from).from === from && doc.lineAt(to).to === to
-          const table = startsLine && !linesTouched(from, to) ? parseTable(state, ref.node) : null
+          const table = startsLine && !isRawTable(state, from, to) ? parseTable(state, ref.node) : null
           if (!table) {
             eachLine(from, to, (lineFrom) => out.push(tableLine.range(lineFrom)))
             break
@@ -278,13 +280,20 @@ function buildDecorations(state: EditorState): DecorationSet {
   return Decoration.set(out, true)
 }
 
-export const livePreview = StateField.define<DecorationSet>({
+const livePreviewField = StateField.define<DecorationSet>({
   create: buildDecorations,
   update(decorations, tr) {
-    if (tr.docChanged || tr.selection || syntaxTree(tr.state) !== syntaxTree(tr.startState)) {
+    if (
+      tr.docChanged ||
+      tr.selection ||
+      syntaxTree(tr.state) !== syntaxTree(tr.startState) ||
+      tr.state.field(rawTableField, false) !== tr.startState.field(rawTableField, false)
+    ) {
       return buildDecorations(tr.state)
     }
     return decorations
   },
   provide: (field) => EditorView.decorations.from(field)
 })
+
+export const livePreview: Extension = [tableEditing, livePreviewField]

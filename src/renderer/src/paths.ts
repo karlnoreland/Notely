@@ -43,6 +43,7 @@ export function isInside(path: string, folder: string): boolean {
   return path === folder || path.startsWith(`${folder}/`)
 }
 
-export function vaultUrl(path: string): string {
-  return `vault://local/${path.split('/').map(encodeURIComponent).join('/')}`
+/** URL for a vault file; `host` identifies the window's folder in the main process. */
+export function vaultUrl(host: string, path: string): string {
+  return `vault://${host}/${path.split('/').map(encodeURIComponent).join('/')}`
 }

@@ -8,12 +8,15 @@ export interface NoteContext {
   openLink(href: string): void
   /** Stores a pasted image in the vault; returns the path to write in the note, or null. */
   saveImage(file: File): Promise<string | null>
+  /** Tells the main process that the coming native context menu is for a table cell. */
+  markTableContextMenu(): void
 }
 
 const fallback: NoteContext = {
   resolveImage: (src) => src,
   openLink: () => {},
-  saveImage: async () => null
+  saveImage: async () => null,
+  markTableContextMenu: () => {}
 }
 
 export const noteContext = Facet.define<NoteContext, NoteContext>({
