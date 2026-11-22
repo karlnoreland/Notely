@@ -1,0 +1,23 @@
+appId: app.notely.desktop
+productName: Notely
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - package.json
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Office
+  executableName: notely
+  maintainer: Notely contributors
+  synopsis: Markdown notes with live preview
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+  # For unsigned local builds run with CSC_IDENTITY_AUTO_DISCOVERY=false.
+artifactName: ${productName}-${version}-${arch}.${ext}
