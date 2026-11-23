@@ -11,7 +11,9 @@
   --accent: #6c5ce7;
   --link: #5a4ad4;
   --formatting: #b1b4bb;
-  --code-bg: #f4f4f6;
+  /* Translucent on purpose: CodeMirror draws the text selection on a layer *behind* the lines,
+     so an opaque code/math background would hide selected text. */
+  --code-bg: rgba(20, 20, 60, 0.045);
   --selection: rgba(108, 92, 231, 0.22);
   --search-match: rgba(255, 196, 0, 0.35);
   --search-match-selected: rgba(255, 140, 0, 0.55);
@@ -49,7 +51,7 @@
     --accent: #9b8cff;
     --link: #a99dff;
     --formatting: #62656d;
-    --code-bg: #26262a;
+    --code-bg: rgba(255, 255, 255, 0.045);
     --selection: rgba(155, 140, 255, 0.28);
     --search-match: rgba(255, 196, 0, 0.25);
     --search-match-selected: rgba(255, 140, 0, 0.45);
