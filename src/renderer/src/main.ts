@@ -3,16 +3,15 @@ import './styles.css'
 
 import { redo, undo } from '@codemirror/commands'
 import { openSearchPanel } from '@codemirror/search'
-import type { EditorState } from '@codemirror/state'
-import { EditorView } from '@codemirror/view'
+import type { EditorView } from '@codemirror/view'
 import type { MenuCommand, TableAction, TreeNode, VaultInfo } from '../../shared/types'
 import { insertLink, setHeading, toggleInline, toggleTask } from './editor/commands'
 import type { NoteContext } from './editor/context'
-import { createEditorState, externalChange, setLivePreview } from './editor/setup'
 import { formatActiveCell, insertTable, isEditingTableCell, runTableAction } from './editor/table'
 import { basename, dirname, isInside, NOTE_EXT, relativePath, resolvePath, stripNoteExt, vaultUrl } from './paths'
 import { FileTree } from './sidebar'
 import { showTablePicker } from './tablePicker'
+import { Workspace, type OpenMode, type Session } from './workspace'
 
 const api = window.notely
 
@@ -22,8 +21,7 @@ const ui = {
   welcome: byId('welcome'),
   vaultName: byId('vault-name'),
   tree: byId('file-tree'),
-  editor: byId('editor'),
-  empty: byId('empty-state'),
+  panes: byId('panes'),
   title: byId('note-title'),
   saveState: byId('save-state'),
   wordCount: byId('word-count'),
@@ -57,55 +55,13 @@ function writePref(key: string, value: unknown): void {
 // ---- State ------------------------------------------------------------------------------------
 
 let vaultTree: TreeNode | null = null
+let vaultPath: string | null = null
 /** Host of vault:// URLs for this window. */
 let assetHost = 'local'
 /** True when this window edits a single file instead of a vault. */
 let singleFileMode = false
-let current: string | null = null
-let dirty = false
-let saveTimer: number | undefined
 let livePreview = readPref('livePreview', true)
-/** Editor states of recently opened notes, so switching back keeps undo history and cursor. */
-const stateCache = new Map<string, EditorState>()
-const STATE_CACHE_LIMIT = 20
-
-const context: NoteContext = {
-  resolveImage(src) {
-    if (/^(https?:|data:|vault:)/i.test(src)) return src
-    let target = src.trim().replace(/^<|>$/g, '')
-    try {
-      target = decodeURI(target)
-    } catch {
-      // Keep as written.
-    }
-    const rel = resolvePath(current ? dirname(current) : '', target)
-    return rel === null ? '' : vaultUrl(assetHost, rel)
-  },
-  openLink(href) {
-    void followLink(href)
-  },
-  async saveImage(file) {
-    if (!current) return null
-    const ext = IMAGE_TYPES[file.type] ?? /\.([a-z0-9]+)$/i.exec(file.name)?.[1]
-    if (!ext) {
-      toast(`Unsupported image type: ${file.type || file.name}`)
-      return null
-    }
-    try {
-      const saved = await api.saveAttachment(ext, new Uint8Array(await file.arrayBuffer()))
-      return relativePath(dirname(current), saved)
-        .split('/')
-        .map(encodeURIComponent)
-        .join('/')
-    } catch (err) {
-      toast(`Could not save image: ${errorMessage(err)}`)
-      return null
-    }
-  },
-  markTableContextMenu() {
-    api.markTableContextMenu()
-  }
-}
+const saveStates = new Map<string, 'saved' | 'editing' | 'error'>()
 
 const IMAGE_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -117,10 +73,46 @@ const IMAGE_TYPES: Record<string, string> = {
   'image/avif': 'avif'
 }
 
-const view = new EditorView({ parent: ui.editor })
-
-function newEditorState(doc: string): EditorState {
-  return createEditorState(doc, { context, livePreview, onChange: handleDocChanged })
+/** Per-tab context for the editor: image paths and links resolve relative to that tab's note. */
+function contextFor(notePath: () => string | null): NoteContext {
+  const dir = (): string => {
+    const path = notePath()
+    return path ? dirname(path) : ''
+  }
+  return {
+    resolveImage(src) {
+      if (/^(https?:|data:|vault:)/i.test(src)) return src
+      let target = src.trim().replace(/^<|>$/g, '')
+      try {
+        target = decodeURI(target)
+      } catch {
+        // Keep as written.
+      }
+      const rel = resolvePath(dir(), target)
+      return rel === null ? '' : vaultUrl(assetHost, rel)
+    },
+    openLink(href) {
+      void followLink(href, dir())
+    },
+    async saveImage(file) {
+      if (!notePath()) return null
+      const ext = IMAGE_TYPES[file.type] ?? /\.([a-z0-9]+)$/i.exec(file.name)?.[1]
+      if (!ext) {
+        toast(`Unsupported image type: ${file.type || file.name}`)
+        return null
+      }
+      try {
+        const saved = await api.saveAttachment(ext, new Uint8Array(await file.arrayBuffer()))
+        return relativePath(dir(), saved).split('/').map(encodeURIComponent).join('/')
+      } catch (err) {
+        toast(`Could not save image: ${errorMessage(err)}`)
+        return null
+      }
+    },
+    markTableContextMenu() {
+      api.markTableContextMenu()
+    }
+  }
 }
 
 // ---- Feedback ---------------------------------------------------------------------------------
@@ -148,7 +140,8 @@ let wordTimer: number | undefined
 function updateWordCount(): void {
   clearTimeout(wordTimer)
   wordTimer = window.setTimeout(() => {
-    if (!current) {
+    const view = ws.focusedView()
+    if (!view) {
       ui.wordCount.textContent = ''
       return
     }
@@ -162,41 +155,50 @@ function updateModeToggle(): void {
   ui.modeToggle.textContent = livePreview ? 'Live preview' : 'Source mode'
 }
 
-function updateTitle(): void {
-  ui.title.textContent = current ? stripNoteExt(basename(current)) : ''
-  document.title = current ? `${stripNoteExt(basename(current))} — Notely` : 'Notely'
-}
-
-// ---- Saving -----------------------------------------------------------------------------------
-
-function handleDocChanged(): void {
-  dirty = true
-  setSaveState('editing')
-  clearTimeout(saveTimer)
-  saveTimer = window.setTimeout(() => void save(), 500)
+/** Title, save state, word count and sidebar highlight follow the focused tab. */
+function updateChrome(): void {
+  const current = ws.currentPath()
+  const name = current ? stripNoteExt(basename(current)) : ''
+  ui.title.textContent = name
+  ui.title.title = current && vaultPath ? `${vaultPath}/${current}` : ''
+  document.title = current ? `${name} — Notely` : 'Notely'
+  setSaveState(current ? (ws.isDirty(current) ? 'editing' : (saveStates.get(current) ?? '')) : '')
   updateWordCount()
+  fileTree.setActive(current)
+  void api.setLastOpenFile(current)
 }
 
-async function save(): Promise<void> {
-  clearTimeout(saveTimer)
-  if (!current || !dirty) return
-  const path = current
-  const text = view.state.doc.toString()
-  dirty = false
-  try {
-    await api.writeFile(path, text)
-    if (!dirty) setSaveState('saved')
-  } catch (err) {
-    dirty = true
-    setSaveState('error')
-    toast(`Could not save ${basename(path)}: ${errorMessage(err)}`)
-  }
+// ---- Workspace (panes and tabs) ---------------------------------------------------------------
+
+let sessionTimer: number | undefined
+function persistSession(): void {
+  if (singleFileMode || !vaultPath) return
+  clearTimeout(sessionTimer)
+  const key = `session:${vaultPath}`
+  sessionTimer = window.setTimeout(() => writePref(key, ws.session()), 300)
 }
+
+const ws = new Workspace(ui.panes, {
+  readFile: (path) => api.readFile(path),
+  writeFile: (path, text) => api.writeFile(path, text),
+  writeFileSync: (path, text) => api.writeFileSync(path, text),
+  contextFor,
+  livePreview: () => livePreview,
+  popupMenu: (items) => api.popupMenu(items),
+  onActiveChange: updateChrome,
+  onDocChange: (path) => {
+    if (path === ws.currentPath()) updateWordCount()
+  },
+  onSaveState: (path, state) => {
+    saveStates.set(path, state)
+    if (path === ws.currentPath()) setSaveState(state)
+  },
+  onError: toast,
+  onLayoutChange: persistSession
+})
 
 // Flush unsaved edits synchronously when the window closes or reloads.
-window.addEventListener('beforeunload', () => {
-  if (current && dirty) api.writeFileSync(current, view.state.doc.toString())
-})
+window.addEventListener('beforeunload', () => ws.flushSync())
 
 // ---- Tree helpers -----------------------------------------------------------------------------
 
@@ -218,68 +220,13 @@ async function refreshTree(): Promise<void> {
   fileTree.setTree(vaultTree)
 }
 
-function remapPath(path: string, from: string, to: string): string {
-  return path === from ? to : `${to}${path.slice(from.length)}`
+// ---- Opening notes ----------------------------------------------------------------------------
+
+function openFile(path: string, mode: OpenMode = 'replace'): Promise<void> {
+  return ws.openFile(path, singleFileMode ? 'replace' : mode)
 }
 
-// ---- Opening and closing notes ----------------------------------------------------------------
-
-function cacheCurrentState(): void {
-  if (!current) return
-  stateCache.delete(current)
-  stateCache.set(current, view.state)
-  while (stateCache.size > STATE_CACHE_LIMIT) {
-    const oldest = stateCache.keys().next().value
-    if (oldest === undefined) break
-    stateCache.delete(oldest)
-  }
-}
-
-async function openFile(path: string): Promise<void> {
-  if (path === current) {
-    view.focus()
-    return
-  }
-  await save()
-  let text: string
-  try {
-    text = await api.readFile(path)
-  } catch (err) {
-    toast(`Could not open ${basename(path)}: ${errorMessage(err)}`)
-    return
-  }
-  cacheCurrentState()
-  const cached = stateCache.get(path)
-  current = path
-  dirty = false
-  view.setState(cached && cached.doc.toString() === text ? cached : newEditorState(text))
-  setLivePreview(view, livePreview) // a cached state may predate a mode switch
-  ui.editor.hidden = false
-  ui.empty.hidden = true
-  setSaveState('')
-  updateTitle()
-  updateWordCount()
-  fileTree.setActive(path)
-  void api.setLastOpenFile(path)
-  view.focus()
-}
-
-/** Closes the editor without saving (callers save first when that's wanted). */
-function closeFile(): void {
-  clearTimeout(saveTimer)
-  dirty = false
-  current = null
-  view.setState(newEditorState(''))
-  ui.editor.hidden = true
-  ui.empty.hidden = false
-  setSaveState('')
-  updateTitle()
-  updateWordCount()
-  fileTree.setActive(null)
-  void api.setLastOpenFile(null)
-}
-
-async function followLink(href: string): Promise<void> {
+async function followLink(href: string, fromDir: string): Promise<void> {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
     await api.openExternal(href)
     return
@@ -291,7 +238,7 @@ async function followLink(href: string): Promise<void> {
   } catch {
     // Keep as written.
   }
-  let rel = resolvePath(current ? dirname(current) : '', target)
+  let rel = resolvePath(fromDir, target)
   if (rel === null) return
   if (!NOTE_EXT.test(rel)) rel += '.md'
   if (singleFileMode) {
@@ -308,7 +255,7 @@ async function createNote(folder = ''): Promise<void> {
     const path = await api.createNote(folder)
     await refreshTree()
     fileTree.expand(folder)
-    await openFile(path)
+    await openFile(path, ws.currentPath() ? 'tab' : 'replace')
     fileTree.startRename(path)
   } catch (err) {
     toast(`Could not create note: ${errorMessage(err)}`)
@@ -327,35 +274,28 @@ async function createFolder(parent = ''): Promise<void> {
 }
 
 async function renameItem(path: string, newName: string): Promise<void> {
-  if (current && isInside(current, path)) await save()
+  await ws.saveMatching((p) => isInside(p, path))
   try {
     const newPath = await api.rename(path, newName)
-    for (const key of [...stateCache.keys()]) {
-      if (isInside(key, path)) {
-        const state = stateCache.get(key)!
-        stateCache.delete(key)
-        stateCache.set(remapPath(key, path, newPath), state)
+    for (const [p, state] of [...saveStates]) {
+      if (isInside(p, path)) {
+        saveStates.delete(p)
+        saveStates.set(p === path ? newPath : `${newPath}${p.slice(path.length)}`, state)
       }
     }
-    if (current && isInside(current, path)) {
-      current = remapPath(current, path, newPath)
-      updateTitle()
-      void api.setLastOpenFile(current)
-    }
+    ws.renamePath(path, newPath)
     await refreshTree()
-    fileTree.setActive(current)
+    fileTree.setActive(ws.currentPath())
   } catch (err) {
     toast(errorMessage(err))
   }
 }
 
 async function deleteItem(path: string): Promise<void> {
-  const affectsCurrent = current !== null && isInside(current, path)
-  if (affectsCurrent) await save()
+  await ws.saveMatching((p) => isInside(p, path))
   try {
     if (!(await api.trash(path))) return
-    for (const key of [...stateCache.keys()]) if (isInside(key, path)) stateCache.delete(key)
-    if (affectsCurrent) closeFile()
+    await ws.closeMatching((p) => isInside(p, path))
     await refreshTree()
   } catch (err) {
     toast(`Could not delete: ${errorMessage(err)}`)
@@ -367,6 +307,10 @@ async function showContextMenu(node: TreeNode | null): Promise<void> {
   const kind = node?.kind ?? 'folder'
   const action = await api.showItemMenu(path, kind)
   switch (action) {
+    case 'open-tab':
+      return openFile(path, 'tab')
+    case 'open-right':
+      return openFile(path, 'split')
     case 'new-note':
       return createNote(path)
     case 'new-folder':
@@ -379,36 +323,37 @@ async function showContextMenu(node: TreeNode | null): Promise<void> {
 }
 
 const fileTree = new FileTree(ui.tree, {
-  open: (path) => void openFile(path),
+  open: (path, mode) => void openFile(path, mode),
   contextMenu: (node) => void showContextMenu(node),
   rename: renameItem,
-  renameEnded: () => {
-    if (current) view.focus()
-  }
+  renameEnded: () => ws.focusedView()?.focus()
 })
 
 // ---- Vault ------------------------------------------------------------------------------------
 
 function enterWindowMode(info: VaultInfo): void {
   assetHost = info.assetHost
+  vaultPath = info.path
   singleFileMode = info.singleFile !== null
   document.body.classList.toggle('single-file', singleFileMode)
   ui.welcome.hidden = true
   ui.app.hidden = false
 }
 
-async function loadVault(info: VaultInfo): Promise<void> {
+async function loadVault(info: VaultInfo, lastOpenFile: string | null = null): Promise<void> {
   enterWindowMode(info)
-  stateCache.clear()
-  closeFile()
+  ws.reset()
+  saveStates.clear()
   ui.vaultName.textContent = info.name
-  ui.welcome.hidden = true
-  ui.app.hidden = false
   await refreshTree()
+  const session = readPref<Session | null>(`session:${info.path}`, null)
+  const restored = session ? await ws.restore(session, (p) => !!findNode(vaultTree, p)) : false
+  if (!restored && lastOpenFile && findNode(vaultTree, lastOpenFile)) await openFile(lastOpenFile)
+  updateChrome()
 }
 
 async function openVault(): Promise<void> {
-  await save() // the main process switches folders as soon as one is picked
+  await ws.saveAll() // the main process switches folders as soon as one is picked
   try {
     const info = await api.openVaultDialog()
     if (info) await loadVault(info)
@@ -417,13 +362,13 @@ async function openVault(): Promise<void> {
   }
 }
 
-/** Single-file window: just this note, no sidebar. */
+/** Single-file window: just this note, no sidebar or tabs. */
 async function loadSingleFile(info: VaultInfo): Promise<void> {
   enterWindowMode(info)
+  ws.reset()
   vaultTree = null
   fileTree.setTree(null)
   await openFile(info.singleFile!)
-  ui.title.title = `${info.path}/${info.singleFile}`
 }
 
 /** Picks a file: an empty window opens it itself, otherwise it gets a window of its own. */
@@ -436,27 +381,23 @@ async function openSingleFile(): Promise<void> {
   }
 }
 
-/** Keep the tree and the open note in sync with changes made outside Notely. */
+/** Keep the tree and the open notes in sync with changes made outside Notely. */
 async function handleVaultChanged(paths: string[] | null): Promise<void> {
   await refreshTree()
-  if (!current) return
-  if (!singleFileMode && !findNode(vaultTree, current)) {
-    closeFile()
-    return
-  }
-  if (dirty || (paths && !paths.includes(current))) return
-  try {
-    const text = await api.readFile(current)
-    if (!dirty && text !== view.state.doc.toString()) {
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: text },
-        annotations: externalChange.of(true)
-      })
-      updateWordCount()
+  for (const path of ws.openPaths()) {
+    if (!singleFileMode && !findNode(vaultTree, path)) {
+      await ws.closeMatching((p) => p === path) // deleted or moved outside Notely
+      continue
     }
-  } catch {
-    // Mid-rename or deleted; the next change event will sort it out.
+    if (ws.isDirty(path) || (paths && !paths.includes(path))) continue
+    try {
+      const text = await api.readFile(path)
+      if (!ws.isDirty(path)) ws.applyExternal(path, text)
+    } catch {
+      // Mid-rename or deleted; the next change event will sort it out.
+    }
   }
+  updateWordCount()
 }
 
 // ---- Commands ---------------------------------------------------------------------------------
@@ -469,14 +410,15 @@ function toggleSidebar(): void {
 function toggleLivePreview(): void {
   livePreview = !livePreview
   writePref('livePreview', livePreview)
-  setLivePreview(view, livePreview)
+  ws.setLivePreview(livePreview)
   updateModeToggle()
 }
 
 function openTablePicker(): void {
-  if (!current) return
+  const view = ws.focusedView()
+  if (!view) return
   const coords = view.coordsAtPos(view.state.selection.main.head)
-  const rect = ui.editor.getBoundingClientRect()
+  const rect = view.dom.getBoundingClientRect()
   const anchor = coords ?? { left: rect.left + rect.width / 2 - 120, top: rect.top + 80, bottom: rect.top + 80 }
   showTablePicker(anchor, (columns, rows) => runEditorCommand(insertTable(columns, rows)))
 }
@@ -534,7 +476,8 @@ function vaultOnly(action: () => void): void {
 }
 
 function runEditorCommand(command: (view: EditorView) => boolean): void {
-  if (!current) return
+  const view = ws.focusedView()
+  if (!view) return
   command(view)
   view.focus()
 }
@@ -545,23 +488,37 @@ function handleMenuCommand(cmd: MenuCommand): void {
       return vaultOnly(() => void createNote())
     case 'new-folder':
       return vaultOnly(() => void createFolder())
+    case 'new-tab':
+      return vaultOnly(() => ws.newTab())
+    case 'close-tab':
+      return vaultOnly(() => ws.closeActiveTab())
+    case 'next-tab':
+      return ws.cycleTab(1)
+    case 'prev-tab':
+      return ws.cycleTab(-1)
+    case 'split-right':
+      return vaultOnly(() => void ws.splitRight())
+    case 'close-split':
+      return void ws.closeSplit()
     case 'open-vault':
       return void openVault()
     case 'open-file':
       return void openSingleFile()
     case 'save':
-      return void save()
+      return void ws.saveAll()
     case 'toggle-sidebar':
       return singleFileMode ? undefined : toggleSidebar()
     case 'toggle-live-preview':
       return toggleLivePreview()
     case 'undo':
-    case 'redo':
-      // Table cells share the editor's history. Elsewhere outside the editor (e.g. the
+    case 'redo': {
+      // Table cells share their editor's history. Elsewhere outside an editor (e.g. the
       // rename box) fall back to the browser's own undo.
-      if (view.hasFocus || isEditingTableCell()) (cmd === 'undo' ? undo : redo)(view)
+      const view = ws.activeView()
+      if (view && (view.hasFocus || isEditingTableCell())) (cmd === 'undo' ? undo : redo)(view)
       else document.execCommand(cmd)
       return
+    }
     case 'find':
       return runEditorCommand(openSearchPanel)
     case 'bold':
@@ -615,10 +572,7 @@ async function init(): Promise<void> {
     return
   }
   if (vault.singleFile !== null) return loadSingleFile(vault)
-  await loadVault(vault)
-  if (settings.lastOpenFile && findNode(vaultTree, settings.lastOpenFile)) {
-    await openFile(settings.lastOpenFile)
-  }
+  await loadVault(vault, settings.lastOpenFile)
 }
 
 void init()

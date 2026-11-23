@@ -5,7 +5,7 @@ import { syntaxHighlighting } from '@codemirror/language'
 import { languages } from '@codemirror/language-data'
 import { search, searchKeymap } from '@codemirror/search'
 import { Annotation, Compartment, EditorState } from '@codemirror/state'
-import { drawSelection, dropCursor, EditorView, keymap } from '@codemirror/view'
+import { drawSelection, dropCursor, EditorView, keymap, type ViewUpdate } from '@codemirror/view'
 import { completions } from './completion'
 import { noteContext, type NoteContext } from './context'
 import { linkClickHandler } from './links'
@@ -14,7 +14,10 @@ import { mathExtension } from './math'
 import { imagePaste } from './paste'
 import { notelyHighlight, notelyTheme } from './theme'
 
-/** Marks transactions that load content from disk, so they don't trigger a save. */
+/**
+ * Marks transactions that come from outside this editor — content loaded from disk, or edits
+ * mirrored from another tab showing the same note — so they don't trigger a save or a mirror.
+ */
 export const externalChange = Annotation.define<boolean>()
 
 const previewMode = new Compartment()
@@ -26,7 +29,7 @@ const editorKeymap = defaultKeymap.filter((binding) => !binding.key || !MENU_KEY
 export interface EditorOptions {
   context: NoteContext
   livePreview: boolean
-  onChange: () => void
+  onChange: (update: ViewUpdate) => void
 }
 
 export function createEditorState(doc: string, options: EditorOptions): EditorState {
@@ -52,7 +55,7 @@ export function createEditorState(doc: string, options: EditorOptions): EditorSt
       notelyTheme,
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !update.transactions.some((tr) => tr.annotation(externalChange))) {
-          options.onChange()
+          options.onChange(update)
         }
       })
     ]

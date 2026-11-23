@@ -29,6 +29,11 @@ A Markdown note-taking app for Linux and macOS with Obsidian-style live preview.
   right-click. Code blocks, inline code, math and URLs are not checked.
 - Notes are plain `.md` files in a folder you choose (a "vault"). The app saves
   automatically and picks up changes made by other programs.
+- **Tabs and split view.** Click a note to open it in the current tab; Ctrl/Cmd+Click or
+  middle-click opens a new tab, and Alt+Click opens it in the split. Drag tabs to reorder
+  them, drag them (or notes from the sidebar) to the other pane, or drop one on the right
+  edge of the editor to split it. The same note can be open in both panes: edits show up in
+  both right away. Open tabs and the split are restored per vault.
 - File tree with create, rename, move to trash and reveal in file manager. Drag its edge
   to resize it (double-click the edge to reset).
 - **Dark mode:** *View › Appearance* (Match System / Light / Dark) or the sun/moon button.
@@ -69,6 +74,9 @@ in place and electron-builder will pick it up.
 | --- | --- |
 | New note / new folder | `Ctrl+N` / `Ctrl+Shift+N` |
 | Open vault / open single file | `Ctrl+O` / `Ctrl+Shift+O` |
+| New tab / close tab | `Ctrl+T` / `Ctrl+W` |
+| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Split right | `Ctrl+Shift+\` |
 | Bold / italic / strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+Shift+X` |
 | Inline code / inline math / link | `Ctrl+E` / `Ctrl+Shift+M` / `Ctrl+K` |
 | Toggle task checkbox | `Ctrl+L` |
@@ -94,6 +102,7 @@ src/
   shared/types.ts  types shared by all three processes
   renderer/
     src/main.ts      app shell: opening/saving notes, file operations, menu commands
+    src/workspace.ts panes, tabs and open documents (mirroring, saving, session)
     src/sidebar.ts   file tree with inline rename
     src/tablePicker.ts  grid popup for choosing a table size
     src/editor/

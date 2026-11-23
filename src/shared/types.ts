@@ -59,7 +59,15 @@ export type TableAction =
   | 'edit-source'
   | 'delete-table'
 
-export type ItemAction = 'new-note' | 'new-folder' | 'rename' | 'delete'
+export type ItemAction = 'new-note' | 'new-folder' | 'rename' | 'delete' | 'open-tab' | 'open-right'
+
+/** One entry of a renderer-defined native popup menu. */
+export interface PopupItem {
+  id?: string
+  label?: string
+  enabled?: boolean
+  separator?: boolean
+}
 
 /** Commands sent from the application menu to the renderer. */
 export type MenuCommand =
@@ -68,6 +76,12 @@ export type MenuCommand =
   | 'open-vault'
   | 'open-file'
   | 'save'
+  | 'new-tab'
+  | 'close-tab'
+  | 'next-tab'
+  | 'prev-tab'
+  | 'split-right'
+  | 'close-split'
   | 'undo'
   | 'redo'
   | 'find'
@@ -117,6 +131,8 @@ export interface NotelyApi {
   setLastOpenFile(path: string | null): Promise<void>
   openExternal(url: string): Promise<void>
   showItemMenu(path: string, kind: NodeKind): Promise<ItemAction | null>
+  /** Shows a native menu at the mouse position; resolves to the chosen item's id. */
+  popupMenu(items: PopupItem[]): Promise<string | null>
   /** Saves image bytes into the vault's attachments folder; returns the new vault-relative path. */
   saveAttachment(extension: string, data: Uint8Array): Promise<string>
   setTheme(theme: ThemeSetting): Promise<void>

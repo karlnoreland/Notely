@@ -17,7 +17,7 @@ import {
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { ItemAction, MenuCommand, NodeKind, TableAction, ThemeSetting, VaultInfo } from '../shared/types'
+import type { ItemAction, MenuCommand, NodeKind, PopupItem, TableAction, ThemeSetting, VaultInfo } from '../shared/types'
 import { buildMenu } from './menu'
 import { SettingsStore } from './settings'
 import { Spellcheck } from './spellcheck'
@@ -273,6 +273,13 @@ function showItemMenu(event: IpcMainInvokeEvent, rel: string, kind: NodeKind): P
     }
     const isRoot = rel === ''
     const template: MenuItemConstructorOptions[] = []
+    if (kind === 'file') {
+      template.push(
+        { label: 'Open in New Tab', click: () => pick('open-tab') },
+        { label: 'Open to the Right', click: () => pick('open-right') },
+        { type: 'separator' }
+      )
+    }
     if (kind === 'folder') {
       template.push(
         { label: 'New Note', click: () => pick('new-note') },
@@ -294,6 +301,27 @@ function showItemMenu(event: IpcMainInvokeEvent, rel: string, kind: NodeKind): P
     Menu.buildFromTemplate(template).popup({
       window: BrowserWindow.fromWebContents(event.sender) ?? undefined,
       // The close callback can fire before the click handler; give the click a moment to win.
+      callback: () => setTimeout(() => pick(null), 100)
+    })
+  })
+}
+
+function popupMenu(event: IpcMainInvokeEvent, items: PopupItem[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false
+    const pick = (id: string | null): void => {
+      if (!settled) {
+        settled = true
+        resolve(id)
+      }
+    }
+    const template: MenuItemConstructorOptions[] = items.map((item) =>
+      item.separator
+        ? { type: 'separator' }
+        : { label: item.label ?? '', enabled: item.enabled ?? true, click: () => pick(item.id ?? null) }
+    )
+    Menu.buildFromTemplate(template).popup({
+      window: BrowserWindow.fromWebContents(event.sender) ?? undefined,
       callback: () => setTimeout(() => pick(null), 100)
     })
   })
@@ -396,6 +424,7 @@ function registerIpc(): void {
 
   ipcMain.handle('shell:open-external', (_e, url: string) => openExternalSafely(url))
   ipcMain.handle('menu:item', (e, rel: string, kind: NodeKind) => showItemMenu(e, rel, kind))
+  ipcMain.handle('menu:popup', (e, items: PopupItem[]) => popupMenu(e, items))
 }
 
 app.setName('Notely')

@@ -429,6 +429,8 @@ class TableView {
     const lastCol = this.colCount - 1
     const atStart = input.selectionStart === 0 && input.selectionEnd === 0
     const atEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length
+    // Ctrl+Tab belongs to the app (switching tabs).
+    if (event.key === 'Tab' && event.ctrlKey) return
     let handled = true
     switch (event.key) {
       case 'Tab':

@@ -30,6 +30,7 @@ const api: NotelyApi = {
   setLastOpenFile: (path) => ipcRenderer.invoke('settings:set-last-file', path),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   showItemMenu: (path, kind) => ipcRenderer.invoke('menu:item', path, kind),
+  popupMenu: (items) => ipcRenderer.invoke('menu:popup', items),
   saveAttachment: (ext, data) => ipcRenderer.invoke('vault:save-attachment', ext, data),
   setTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
   onVaultChanged: (cb) => subscribe('vault:changed', cb),

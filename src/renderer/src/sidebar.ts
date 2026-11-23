@@ -1,8 +1,10 @@
 import type { TreeNode } from '../../shared/types'
 import { basename, NOTE_EXT, stripNoteExt } from './paths'
+import { PATH_MIME, type OpenMode } from './workspace'
 
 export interface FileTreeHandlers {
-  open(path: string): void
+  /** Click: replace the current tab. Ctrl/Cmd+click or middle click: new tab. Alt+click: split. */
+  open(path: string, mode: OpenMode): void
   /** node is null for a right-click on empty space (the vault root). */
   contextMenu(node: TreeNode | null): void
   rename(path: string, newName: string): Promise<void>
@@ -106,10 +108,21 @@ export class FileTree {
     label.textContent = node.kind === 'file' ? stripNoteExt(node.name) : node.name
     row.append(icon, label)
 
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (event) => {
       if (node.kind === 'folder') this.toggle(node.path)
-      else this.handlers.open(node.path)
+      else this.handlers.open(node.path, event.altKey ? 'split' : event.ctrlKey || event.metaKey ? 'tab' : 'replace')
     })
+    row.addEventListener('auxclick', (event) => {
+      if (event.button === 1 && node.kind === 'file') this.handlers.open(node.path, 'tab')
+    })
+    if (node.kind === 'file') {
+      // Drag a note onto a tab bar or editor pane to open it there.
+      row.draggable = true
+      row.addEventListener('dragstart', (event) => {
+        event.dataTransfer?.setData(PATH_MIME, node.path)
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove'
+      })
+    }
     row.addEventListener('contextmenu', (event) => {
       event.preventDefault()
       event.stopPropagation()

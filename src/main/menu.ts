@@ -31,11 +31,15 @@ export function buildMenu({ send, spellcheck, theme, setTheme }: MenuContext): M
         cmd('New Note', 'new-note', 'CmdOrCtrl+N'),
         cmd('New Folder', 'new-folder', 'CmdOrCtrl+Shift+N'),
         sep,
+        cmd('New Tab', 'new-tab', 'CmdOrCtrl+T'),
+        sep,
         cmd('Open Vault…', 'open-vault', 'CmdOrCtrl+O'),
         cmd('Open File…', 'open-file', 'CmdOrCtrl+Shift+O'),
         cmd('Save', 'save', 'CmdOrCtrl+S'),
         sep,
-        isMac ? { role: 'close' } : { role: 'quit' }
+        cmd('Close Tab', 'close-tab', 'CmdOrCtrl+W'),
+        { role: 'close', label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W' },
+        ...(isMac ? [] : [{ role: 'quit' as const }])
       ]
     },
     {
@@ -80,6 +84,11 @@ export function buildMenu({ send, spellcheck, theme, setTheme }: MenuContext): M
       submenu: [
         cmd('Toggle Sidebar', 'toggle-sidebar', 'CmdOrCtrl+\\'),
         cmd('Toggle Live Preview / Source', 'toggle-live-preview', 'CmdOrCtrl+Shift+E'),
+        sep,
+        cmd('Split Right', 'split-right', 'CmdOrCtrl+Shift+\\'),
+        cmd('Close Split', 'close-split'),
+        cmd('Next Tab', 'next-tab', 'Ctrl+Tab'),
+        cmd('Previous Tab', 'prev-tab', 'Ctrl+Shift+Tab'),
         {
           label: 'Appearance',
           submenu: (['system', 'light', 'dark'] as const).map((value) => ({
